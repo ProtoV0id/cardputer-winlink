@@ -1,8 +1,8 @@
-# Cardputer Winlink
+# PocketLink
 
 An experimental, keyboard-operated graphical interface for [Pat Winlink](https://getpat.io/) on the M5Stack Cardputer Zero. This first version supports Internet Telnet sessions. It can read Pat's inbox, outbox and sent folders; compose and queue text messages; and send and receive when the operator explicitly starts a session.
 
-The package adds **Cardputer Winlink** to the APPLaunch application wheel. See [LAUNCHER-SETUP.md](LAUNCHER-SETUP.md) for the full instructions. The built-in display, keyboard, application wheel, and real Winlink connection have not yet been tested on a physical Zero.
+The package adds **PocketLink** to the APPLaunch application wheel. It is an independent interface that uses Pat and Winlink. See [LAUNCHER-SETUP.md](LAUNCHER-SETUP.md) for the full instructions. A previous version completed a Telnet round trip on a Cardputer Zero; this version's updated interface and launcher entry still need on-device verification.
 
 ## Install over SSH
 
@@ -20,7 +20,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.1.1_all.deb
+sudo apt install ./dist/cardputer-winlink_0.2.0_all.deb
 ```
 
 The final command installs the app, Pat, Pillow, and evdev using the device's configured Debian repositories. The package requires Pat 0.16.0 or newer; if apt cannot satisfy a dependency, stop and check your Cardputer's OS and package sources. If `~/cardputer-winlink` already exists, Git refuses to overwrite it; inspect the existing folder before choosing a different destination.
@@ -33,7 +33,7 @@ command -v pat-winlink || command -v pat
 ls -l /usr/share/APPLaunch/applications/cardputer-winlink.desktop
 ```
 
-Then use the Cardputer's own screen to find **Cardputer Winlink** in the application wheel. If it is absent, restart APPLaunch or reboot and check again. These checks confirm installed files and Pat's executable; the application still needs to be opened and tested on the device.
+Then use the Cardputer's own screen to find **PocketLink** in the application wheel. If it is absent, restart APPLaunch or reboot and check again. These checks confirm installed files and Pat's executable; the application still needs to be opened and tested on the device.
 
 ## Update an existing installation
 
@@ -44,14 +44,14 @@ cd ~/cardputer-winlink
 git pull --ff-only
 build_dir=$(mktemp -d)
 python3 build_package.py --output-dir "$build_dir"
-sudo apt install "$build_dir/cardputer-winlink_0.1.1_all.deb"
+sudo apt install "$build_dir/cardputer-winlink_0.2.0_all.deb"
 ```
 
-The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. Pat's configuration and mail are not intentionally removed by the package upgrade.
+The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. The Debian package and existing installation paths remain named `cardputer-winlink`, so this upgrades the previous version instead of installing a second app. The wheel entry is renamed PocketLink. The upgrade leaves Pat's configuration and mail in their existing locations.
 
 ## First use
 
-1. Connect the Cardputer Zero to Wi-Fi and open **Cardputer Winlink** from the application wheel.
+1. Connect the Cardputer Zero to Wi-Fi and open **PocketLink** from the application wheel.
 2. Open **Settings**, enter your callsign, and optionally your grid locator. If you already have a Winlink account, enter its secure login password. Password entry is masked; leaving it empty keeps the current password.
 3. Open **Compose message**, enter the recipient, subject, and body, review the message and queue it. Queuing saves it to Pat's outbox; it does not transmit.
 4. Choose **Connect via Telnet**, then confirm. Pat sends queued mail and receives waiting mail over the Internet. Open **Inbox** to read incoming messages.

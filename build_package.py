@@ -9,30 +9,40 @@ import zlib
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = "cardputer-winlink"
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 PREFIX = "/usr/share/APPLaunch"
 OUTPUT_NAME = f"{PACKAGE}_{VERSION}_all.deb"
 SOURCES = ("winlink_gui.py", "backend.py", "device.py")
 
 
 def icon_png():
-    """Generate a simple envelope icon without requiring image libraries."""
+    """Generate the PocketLink field-radio icon without image libraries."""
     width = height = 96
     raw = bytearray()
     for y in range(height):
         raw.append(0)
         for x in range(width):
-            color = (9, 19, 31)
-            if 7 <= x <= 88 and 7 <= y <= 88:
-                color = (17, 39, 55)
-            # Envelope outline and folding lines.
-            if ((19 <= x <= 77 and y in (29, 30, 65, 66)) or
-                (29 <= y <= 66 and x in (19, 20, 76, 77)) or
-                (21 <= x <= 48 and abs(y - (31 + (x - 21) // 2)) <= 1) or
-                (48 <= x <= 75 and abs(y - (44 - (x - 48) // 2)) <= 1)):
-                color = (65, 221, 205)
-            if 43 <= x <= 53 and 73 <= y <= 76:
-                color = (246, 188, 84)
+            color = (11, 19, 24)
+            # A compact radio face with inset display and an amber status lamp.
+            if 8 <= x <= 87 and 8 <= y <= 87:
+                color = (29, 43, 44)
+            if 12 <= x <= 83 and 12 <= y <= 83:
+                color = (20, 31, 32)
+            if 16 <= x <= 79 and 17 <= y <= 72:
+                color = (10, 23, 25)
+            if 69 <= x <= 75 and 21 <= y <= 27:
+                color = (225, 177, 89)
+            # Envelope and radio bars combine messaging with a field-radio cue.
+            if ((23 <= x <= 64 and y in (34, 35, 60, 61)) or
+                (34 <= y <= 61 and x in (23, 24, 63, 64)) or
+                (25 <= x <= 43 and abs(y - (36 + (x - 25) // 2)) <= 1) or
+                (44 <= x <= 62 and abs(y - (45 - (x - 44) // 2)) <= 1)):
+                color = (124, 202, 169)
+            if ((24 <= x <= 32 and 77 <= y <= 79) or
+                (37 <= x <= 45 and 77 <= y <= 79) or
+                (50 <= x <= 58 and 77 <= y <= 79) or
+                (63 <= x <= 71 and 77 <= y <= 79)):
+                color = (80, 112, 101)
             raw.extend(color)
 
     def chunk(tag, data):
@@ -84,7 +94,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     target = out / OUTPUT_NAME
 
-    desktop = ("[Desktop Entry]\nType=Application\nName=Cardputer Winlink\n"
+    desktop = ("[Desktop Entry]\nType=Application\nName=PocketLink\n"
                f"Exec={PREFIX}/bin/{PACKAGE}\n"
                f"Icon=share/images/{PACKAGE}.png\nTerminal=false\n")
     wrapper = ("#!/bin/sh\nset -eu\numask 077\n"
@@ -93,8 +103,8 @@ def main():
                "Maintainer: Cardputer local build <local@invalid>\n"
                "Depends: python3, python3-pil, python3-evdev, pat (>= 0.16.0)\n"
                "Section: hamradio\nPriority: optional\n"
-               "Description: Keyboard-driven Pat interface for Cardputer Zero\n"
-               " Graphical Winlink interface using Pat for Telnet connections.\n")
+               "Description: PocketLink keyboard-driven interface for Pat\n"
+               " Graphical Winlink interface for Cardputer Zero using Pat.\n")
     files = {
         f"{PREFIX}/applications/{PACKAGE}.desktop".lstrip("/"): (desktop.encode(), 0o644),
         f"{PREFIX}/bin/{PACKAGE}".lstrip("/"): (wrapper.encode(), 0o755),

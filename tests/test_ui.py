@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from winlink_gui import UI, wrap
+from winlink_gui import BODY, UI, wrap
 
 
 class FakePat:
@@ -45,6 +45,7 @@ class UITest(unittest.TestCase):
         self.fail("worker did not finish")
 
     def test_home_and_inbox_navigation(self):
+        self.assertEqual(self.ui.title, "POCKETLINK")
         self.assertEqual(self.ui.draw().size, (320, 170))
         self.ui.input("ENTER")
         self.wait_task()
@@ -52,6 +53,17 @@ class UITest(unittest.TestCase):
         self.ui.input("ENTER")
         self.wait_task()
         self.assertIn("Hello", self.ui.text)
+
+    def test_menu_scroll_retains_access_to_all_actions(self):
+        for _ in range(7):
+            self.ui.input("DOWN")
+        self.assertEqual(self.ui.items[self.ui.sel][0], "Exit")
+        self.ui.draw()
+        self.assertEqual(self.ui.top, 4)
+        self.ui.input("DOWN")
+        self.ui.draw()
+        self.assertEqual(self.ui.items[self.ui.sel][0], "Inbox")
+        self.assertEqual(self.ui.top, 0)
 
     def test_received_crlf_is_displayed_as_lines_not_control_glyphs(self):
         body = "First\r\nSecond\r\n\r\nFourth\rFifth\tcolumn\x00"
@@ -67,6 +79,15 @@ class UITest(unittest.TestCase):
         self.assertEqual(rendered[-5:], ["First", "Second", "", "Fourth", "Fifth   column"])
         self.assertTrue(all("\r" not in line and "\x00" not in line for line in rendered))
         self.ui.draw()
+
+    def test_view_wrap_prefers_words_and_keeps_paragraphs(self):
+        width = BODY.getlength("Hello W")
+        self.assertEqual(wrap("Hello World\r\n\r\nAgain", width=width, prefer_words=True),
+                         ["Hello", "World", "", "Again"])
+        self.assertEqual("".join(wrap("longunbrokenaddress", width=width, prefer_words=True)),
+                         "longunbrokenaddress")
+        self.assertNotEqual(wrap("Hello World", width=width),
+                            wrap("Hello World", width=width, prefer_words=True))
 
     def test_draft_queue_then_explicit_connect(self):
         self.ui.draft = {"to": "N0CALL@winlink.org", "subject": "Hi", "body": "Hello"}

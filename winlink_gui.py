@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keyboard-first Pat Winlink interface for the Cardputer Zero."""
+"""PocketLink: a keyboard-first Pat Winlink interface for Cardputer Zero."""
 import argparse
 import os
 import queue
@@ -10,8 +10,11 @@ from PIL import Image, ImageDraw, ImageFont
 from backend import PatBackend
 from device import W, H, default_keyboard, run_device
 
-BG, PANEL, CARD = "#08121d", "#102334", "#193749"
-TEXT, MUTED, ACCENT, GOLD = "#edf6f7", "#a4bdc5", "#55e3ce", "#f8c46c"
+# Muted charcoal and high-contrast green evoke a modern field radio. These
+# colors are decorative; none are used as an unverified connection indicator.
+BG, PANEL, CARD = "#0d1518", "#172328", "#263c38"
+TEXT, MUTED, ACCENT, GOLD = "#f0f5e9", "#aebfba", "#b7e77e", "#edc681"
+EDGE, DIVIDER = "#3d5c50", "#24363a"
 
 
 def font(size, bold=False):
@@ -36,13 +39,14 @@ def fit(value, width, face=BODY):
     return value
 
 
-def wrap(text, width=300, face=BODY):
+def wrap(text, width=300, face=BODY, prefer_words=False):
     """Wrap display text without drawing mail line endings as box glyphs.
 
     Winlink messages commonly use CRLF.  Treat it as a single line break and
     lone CR as a line break too; retain empty paragraphs. Tabs expand to spaces
     and nonprinting control characters are suppressed only for rendering.
-    The message returned by Pat remains unchanged.
+    The message returned by Pat remains unchanged. Message views can prefer
+    word boundaries; the editor retains character wrapping for cursor layout.
     """
     text = str(text).replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
     text = "".join(ch for ch in text if ch == "\n" or (ord(ch) >= 32 and not 127 <= ord(ch) < 160))
@@ -54,8 +58,13 @@ def wrap(text, width=300, face=BODY):
         line = ""
         for ch in paragraph:
             if line and face.getlength(line + ch) > width:
-                result.append(line)
-                line = ""
+                split = line.rfind(" ") if prefer_words else -1
+                if split > 0 and line[:split].strip():
+                    result.append(line[:split].rstrip())
+                    line = line[split+1:].lstrip()
+                else:
+                    result.append(line)
+                    line = ""
             line += ch
         result.append(line)
     return result or [""]
@@ -75,7 +84,7 @@ class UI:
         self.back = back or self.home
 
     def home(self):
-        self.menu("CARDPUTER WINLINK", [
+        self.menu("POCKETLINK", [
             ("Inbox", lambda: self.folder("in")),
             ("Compose message", self.compose),
             ("Outbox", lambda: self.folder("out")),
@@ -257,7 +266,7 @@ class UI:
             if key in ("UP", "LEFT"):
                 self.top = max(0, self.top - 1)
             elif key in ("DOWN", "RIGHT"):
-                self.top = min(max(0, len(wrap(self.text)) - ROWS), self.top + 1)
+                self.top = min(max(0, len(wrap(self.text, prefer_words=True)) - ROWS), self.top + 1)
             elif key == "ENTER" and hasattr(self, "accept") and self.accept:
                 action, self.accept = self.accept, None
                 action()
@@ -287,21 +296,38 @@ class UI:
     def draw(self):
         image = Image.new("RGB", (W, H), BG)
         d = ImageDraw.Draw(image)
-        d.rectangle((0, 0, W, 28), fill=PANEL)
-        d.rectangle((0, 0, 4, 28), fill=ACCENT)
-        d.text((11, 5), fit(self.title, 248, TITLE), font=TITLE, fill=TEXT)
+        # Header: the TELNET badge names the selected transport; it does not
+        # claim the network or Winlink server is connected.
+        d.rectangle((0, 0, W, 27), fill=PANEL)
+        d.rectangle((0, 0, 3, 27), fill=ACCENT)
+        d.line((0, 27, W, 27), fill=EDGE)
+        d.text((11, 5), fit(self.title, 235, TITLE), font=TITLE, fill=TEXT)
         if self.mode == "menu":
-            d.text((272, 9), f"{self.sel+1}/{len(self.items)}", font=SMALL, fill=ACCENT)
+            if self.title == "POCKETLINK":
+                d.rounded_rectangle((259, 6, 311, 21), radius=3, fill="#2c4039", outline=EDGE)
+                d.text((265, 8), "TELNET", font=SMALL, fill=ACCENT)
+            else:
+                counter = f"{self.sel+1}/{len(self.items)}"
+                d.text((310-SMALL.getlength(counter), 8), counter, font=SMALL, fill=ACCENT)
             self.top = min(self.top, self.sel)
             if self.sel >= self.top + 4:
                 self.top = self.sel - 3
+            if len(self.items) > 4:
+                d.line((317, 33, 317, 143), fill=DIVIDER, width=2)
+                thumb_h = max(8, int(110 * 4 / len(self.items)))
+                thumb_y = 33 + int((110 - thumb_h) * self.top / (len(self.items) - 4))
+                d.line((317, thumb_y, 317, thumb_y + thumb_h), fill=ACCENT, width=2)
             for row, (label, _) in enumerate(self.items[self.top:self.top+4]):
                 y = 32 + row * 28
                 selected = row + self.top == self.sel
                 if selected:
-                    d.rounded_rectangle((6, y-1, 313, y+24), radius=5, fill=CARD, outline="#327a83")
-                d.text((13, y+2), fit(("> " if selected else "  ") + label, 292), font=BODY,
-                       fill=TEXT if selected else MUTED)
+                    d.rounded_rectangle((6, y-1, 313, y+24), radius=4, fill=CARD, outline=EDGE)
+                    d.rectangle((7, y+3, 9, y+20), fill=ACCENT)
+                else:
+                    d.line((15, y+24, 307, y+24), fill=DIVIDER)
+                number = f"{row + self.top + 1:02d}"
+                d.text((16, y+6), number, font=SMALL, fill=ACCENT if selected else MUTED)
+                d.text((43, y+2), fit(label, 256), font=BODY, fill=TEXT if selected else MUTED)
             hint = "F/X OR ARROWS MOVE     ENTER OPEN"
         elif self.mode == "edit":
             before = self.text[:self.cursor]
@@ -311,11 +337,11 @@ class UI:
             all_lines = wrap(shown)
             start = max(0, len(before_lines) - ROWS)
             for row, line in enumerate(all_lines[start:start+ROWS]):
-                d.text((10, 32+row*22), line, font=BODY, fill=TEXT)
+                d.text((12, 32+row*22), line, font=BODY, fill=TEXT)
             hint = "SHIFT+ENTER SAVE   ESC BACK" if self.multiline else "ENTER SAVE   ESC BACK"
         else:
-            for row, line in enumerate(wrap(self.text)[self.top:self.top+ROWS] if self.mode == "view" else wrap(self.text)[:ROWS]):
-                d.text((10, 32+row*22), line, font=BODY, fill=TEXT)
+            for row, line in enumerate(wrap(self.text, prefer_words=True)[self.top:self.top+ROWS] if self.mode == "view" else wrap(self.text, prefer_words=True)[:ROWS]):
+                d.text((12, 32+row*22), line, font=BODY, fill=TEXT)
             if self.mode == "busy":
                 hint = "PLEASE WAIT"
             elif self.accept:
@@ -323,8 +349,9 @@ class UI:
             else:
                 hint = "F/X SCROLL    ENTER / ESC BACK"
         d.rectangle((0, 150, W, H), fill=PANEL)
-        d.line((0, 150, W, 150), fill="#2e5260")
-        d.text((9, 153), hint, font=SMALL, fill=GOLD)
+        d.line((0, 150, W, 150), fill=EDGE)
+        d.rectangle((0, 151, 3, 169), fill=GOLD)
+        d.text((10, 153), fit(hint, 300, SMALL), font=SMALL, fill=TEXT)
         return image
 
 
@@ -349,5 +376,5 @@ if __name__ == "__main__":
     try:
         main()
     except (RuntimeError, OSError) as exc:
-        print("Cardputer Winlink:", exc, file=sys.stderr)
+        print("PocketLink:", exc, file=sys.stderr)
         sys.exit(1)
