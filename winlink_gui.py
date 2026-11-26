@@ -37,9 +37,17 @@ def fit(value, width, face=BODY):
 
 
 def wrap(text, width=300, face=BODY):
-    """Wrap on pixel width, retaining newlines and long unbroken strings."""
+    """Wrap display text without drawing mail line endings as box glyphs.
+
+    Winlink messages commonly use CRLF.  Treat it as a single line break and
+    lone CR as a line break too; retain empty paragraphs. Tabs expand to spaces
+    and nonprinting control characters are suppressed only for rendering.
+    The message returned by Pat remains unchanged.
+    """
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
+    text = "".join(ch for ch in text if ch == "\n" or (ord(ch) >= 32 and not 127 <= ord(ch) < 160))
     result = []
-    for paragraph in str(text).split("\n"):
+    for paragraph in text.split("\n"):
         if not paragraph:
             result.append("")
             continue

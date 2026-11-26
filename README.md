@@ -20,7 +20,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.1.0_all.deb
+sudo apt install ./dist/cardputer-winlink_0.1.1_all.deb
 ```
 
 The final command installs the app, Pat, Pillow, and evdev using the device's configured Debian repositories. The package requires Pat 0.16.0 or newer; if apt cannot satisfy a dependency, stop and check your Cardputer's OS and package sources. If `~/cardputer-winlink` already exists, Git refuses to overwrite it; inspect the existing folder before choosing a different destination.
@@ -34,6 +34,20 @@ ls -l /usr/share/APPLaunch/applications/cardputer-winlink.desktop
 ```
 
 Then use the Cardputer's own screen to find **Cardputer Winlink** in the application wheel. If it is absent, restart APPLaunch or reboot and check again. These checks confirm installed files and Pat's executable; the application still needs to be opened and tested on the device.
+
+## Update an existing installation
+
+Close the app on the Cardputer, connect over SSH, and run:
+
+```sh
+cd ~/cardputer-winlink
+git pull --ff-only
+build_dir=$(mktemp -d)
+python3 build_package.py --output-dir "$build_dir"
+sudo apt install "$build_dir/cardputer-winlink_0.1.1_all.deb"
+```
+
+The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. Pat's configuration and mail are not intentionally removed by the package upgrade.
 
 ## First use
 
@@ -50,6 +64,7 @@ Winlink accounts require a valid amateur license or qualifying agency authorizat
 - In a text field, type normally, use left/right to move the cursor and Backspace to delete. Enter saves a single-line field.
 - In the message body, Enter starts a new line; Shift+Enter saves the body. Escape returns without saving that field's changes. The rest of the draft remains available until the app exits or you clear it.
 - Review a completed draft and explicitly choose **Queue in Pat outbox**. A separate confirmation starts the Telnet session.
+- Winlink doesn't send a message from an account back to that same account. To test a round trip, send to `TEST@winlink.org`, wait about a minute after connecting, then connect again and check Inbox. Other users may be addressed by callsign.
 
 The built-in keypad translation follows M5Stack's v5 Zero driver and keymap. Verify punctuation, cursor controls and Shift+Enter on the device before relying on the app.
 

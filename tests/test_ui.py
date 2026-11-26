@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from winlink_gui import UI
+from winlink_gui import UI, wrap
 
 
 class FakePat:
@@ -52,6 +52,21 @@ class UITest(unittest.TestCase):
         self.ui.input("ENTER")
         self.wait_task()
         self.assertIn("Hello", self.ui.text)
+
+    def test_received_crlf_is_displayed_as_lines_not_control_glyphs(self):
+        body = "First\r\nSecond\r\n\r\nFourth\rFifth\tcolumn\x00"
+        self.backend.read_message = lambda folder, mid: {
+            "id": mid, "from": "TEST", "to": "N0CALL", "subject": "Round trip",
+            "body": body,
+        }
+        self.ui.open_message("in", {"id": "ABC1"})
+        self.wait_task()
+        # Render-only normalization does not alter the message returned by Pat.
+        self.assertIn(body, self.ui.text)
+        rendered = wrap(self.ui.text, width=5000)
+        self.assertEqual(rendered[-5:], ["First", "Second", "", "Fourth", "Fifth   column"])
+        self.assertTrue(all("\r" not in line and "\x00" not in line for line in rendered))
+        self.ui.draw()
 
     def test_draft_queue_then_explicit_connect(self):
         self.ui.draft = {"to": "N0CALL@winlink.org", "subject": "Hi", "body": "Hello"}

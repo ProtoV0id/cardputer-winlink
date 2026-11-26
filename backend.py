@@ -252,6 +252,16 @@ class PatBackend:
         if not to.strip() or not subject.strip() or not body.strip():
             raise PatError("Enter a recipient, subject, and message.")
         with self._lock:
+            own_call = str(self._config().get("mycall") or "").strip().casefold()
+            if own_call:
+                own_addresses = {own_call, own_call + "@winlink.org"}
+                for address in re.split(r"[,;\s]+", to.strip()):
+                    candidate = address.casefold()
+                    if candidate.startswith("smtp:"):
+                        candidate = candidate[5:]
+                    if candidate in own_addresses:
+                        raise PatError("Winlink cannot deliver to your own account. "
+                                       "For a test, send to TEST@winlink.org.")
             date = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             self._request("/api/mailbox/out", {"to": to.strip(), "subject": subject.strip(), "body": body, "date": date})
 

@@ -61,6 +61,33 @@ class PatBackendTests(unittest.TestCase):
         self.assertIn("2 message", self.backend.connect_telnet())
         self.assertTrue(self.backend.calls[-1][1]["url"].startswith("telnet://"))
 
+    def test_winlink_callsign_and_full_address_are_forwarded_to_pat(self):
+        # Pat handles bare Winlink callsigns as well as fully qualified
+        # addresses. Do not invent an SMTP prefix or change the recipient.
+        for address in ("W1AW", "W1AW@winlink.org"):
+            with self.subTest(address=address):
+                self.backend.queue_message(address, "Test", "Hello")
+                path, data = self.backend.calls[-1]
+                self.assertEqual(path, "/api/mailbox/out")
+                self.assertEqual(data["to"], address)
+
+    def test_self_address_is_blocked_with_instructions_without_queuing(self):
+        for address in ("N0CALL", "n0call", "N0CALL@WINLINK.ORG",
+                        "SMTP:N0CALL@winlink.org", "TEST; n0call@winlink.org"):
+            with self.subTest(address=address):
+                before = len(self.backend.calls)
+                with self.assertRaisesRegex(PatError, "TEST@winlink.org"):
+                    self.backend.queue_message(address, "Subject", "Body")
+                self.assertEqual(len(self.backend.calls), before)
+
+    def test_other_address_and_distinct_ssid_remain_allowed(self):
+        # Registered SSID accounts can be separate; don't block solely because
+        # their base callsign is the same as ours.
+        for address in ("N0CALL-3", "N0CALL-3@winlink.org", "n0call@example.org", "TEST"):
+            with self.subTest(address=address):
+                self.backend.queue_message(address, "Subject", "Body")
+                self.assertEqual(self.backend.calls[-1][1]["to"], address)
+
     def test_invalid_settings_leave_file_untouched(self):
         before = self.config.read_bytes()
         with self.assertRaises(PatError):
