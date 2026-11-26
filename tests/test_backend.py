@@ -137,6 +137,24 @@ class PatBackendTests(unittest.TestCase):
         self.assertEqual(self.backend.calls, [])
         self.assertIsNone(self.backend._agw_port)
 
+    def test_packet_route_places_digipeater_before_gateway(self):
+        original = self.config.read_bytes()
+        self.backend.connect_packet(" kt7run-10 ", 8000, " w7mot-6 ")
+        self.assertEqual(self.backend.calls[-1],
+                         ("/api/connect", {"url": "ax25+agwpe:///W7MOT-6/KT7RUN-10"}))
+        self.assertEqual(self.config.read_bytes(), original)
+        self.backend.connect_packet("KT7RUN-10", 8000, "")
+        self.assertEqual(self.backend.calls[-1],
+                         ("/api/connect", {"url": "ax25+agwpe:///KT7RUN-10"}))
+
+    def test_packet_route_rejects_malformed_digipeaters_before_any_request(self):
+        for via in ("W7MOT-16", "TOO-LONG", "W7MOT-6/KT7RUN-10", "W7MOT-6,N0CALL", "W7MOT?x=y", None):
+            with self.subTest(via=via):
+                with self.assertRaises(PatError):
+                    self.backend.connect_packet("KT7RUN-10", 8000, via)
+        self.assertEqual(self.backend.calls, [])
+        self.assertIsNone(self.backend._agw_port)
+
     def test_packet_timeout_does_not_retry_or_fall_back(self):
         calls = []
         def timed_out(path, data=None, **kwargs):

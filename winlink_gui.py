@@ -144,9 +144,10 @@ class RadioSettings:
         if field == "mac":
             if not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", value):
                 raise ValueError("Enter the Bluetooth address as AA:BB:CC:DD:EE:FF.")
-        elif field == "gateway":
-            if not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", value):
-                raise ValueError("Enter a gateway callsign, optionally with SSID 0-15.")
+        elif field in ("gateway", "via"):
+            if (field == "gateway" or value) and not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", value):
+                raise ValueError("Enter a valid callsign with optional SSID 0-15." if field == "gateway"
+                                 else "Enter one digipeater callsign with optional SSID 0-15, or leave blank for direct.")
         else:
             raise ValueError("Unknown packet setting.")
         try:
@@ -334,6 +335,7 @@ class UI:
         self.menu("PACKET SETTINGS", [
             ("Bluetooth: " + (settings.get("mac") or "(set address)"), lambda: self.edit_radio_setting("mac")),
             ("Gateway: " + (settings.get("gateway") or "(set callsign)"), lambda: self.edit_radio_setting("gateway")),
+            ("Via: " + (settings.get("via") or "Direct"), lambda: self.edit_radio_setting("via")),
             ("Setup help", self.packet_help),
             ("Back", self.home),
         ], self.home)
@@ -351,12 +353,13 @@ class UI:
                 self.view("INVALID SETTING", str(exc), self.packet_settings)
                 return
             self.packet_settings()
-        self.edit("BLUETOOTH ADDRESS" if field == "mac" else "RMS GATEWAY CALL",
-                  current, save, self.packet_settings)
+        title = {"mac": "BLUETOOTH ADDRESS", "gateway": "RMS GATEWAY CALL", "via": "DIGIPEATER (OPTIONAL)"}[field]
+        self.edit(title, current, save, self.packet_settings)
 
     def packet_help(self):
         self.view("PACKET SETUP", "Pair your UV-PRO with the Cardputer using Bluetooth. "
-                  "Enable KISS TNC on the radio. Enter its Bluetooth address and an RMS gateway callsign here.\n\n"
+                  "Enable KISS TNC on the radio. Enter its Bluetooth address and an RMS gateway callsign here. "
+                  "For a digipeater, enter its callsign in Via; leave Via blank for a direct connection.\n\n"
                   "Set and verify the radio's KISS frequency and 1200-baud packet settings for that gateway. "
                   "Check your radio and gateway instructions before transmitting.", self.packet_settings)
 
@@ -370,15 +373,18 @@ class UI:
             self.view("PACKET SETUP NEEDED", "Enter the Bluetooth address and RMS gateway callsign in Packet radio settings.",
                       self.packet_settings)
             return
-        self.view("PACKET RADIO", "This session will TRANSMIT via the UV-PRO.\n\n"
-                  "Pair the radio, enable KISS TNC, and verify its packet frequency and 1200 baud match the gateway.\n\n"
-                  "Gateway: " + str(settings["gateway"]) + "\n\nPress Enter to choose whether to connect.", self.home)
+        route = str(settings.get("via") or "Direct")
+        self.view("PACKET RADIO", "Gateway: " + str(settings["gateway"]) + "\nVia: " + route + "\n\n"
+                  "This session will TRANSMIT via the UV-PRO. Pair the radio, enable KISS TNC, "
+                  "and verify its packet frequency and 1200 baud match the gateway.\n\n"
+                  "Press Enter to choose whether to connect.", self.home)
         self.accept = lambda: self.packet_confirm(settings)
 
     def packet_confirm(self, settings):
-        self.menu("TRANSMIT PACKET?", [
+        route = "Via " + str(settings["via"]) if settings.get("via") else "Direct connection"
+        self.menu("TX " + str(settings["gateway"]) + "?", [
             ("Cancel", self.home),
-            ("TX to " + str(settings["gateway"]), lambda: self.packet_connect(settings)),
+            (route, lambda: self.packet_connect(settings)),
         ], self.home)
 
     def packet_connect(self, settings):
@@ -394,7 +400,7 @@ class UI:
             # Bluetooth connectivity or over-the-air delivery. Only report
             # Pat's completed session result after it returns.
             with factory(settings["mac"], call, port=8000):
-                return self.backend.connect_packet(settings["gateway"], 8000)
+                return self.backend.connect_packet(settings["gateway"], 8000, settings.get("via") or "")
         self.task("PACKET SESSION", work,
                   lambda output: self.view("SESSION FINISHED", output or "Packet session completed."), self.home)
 

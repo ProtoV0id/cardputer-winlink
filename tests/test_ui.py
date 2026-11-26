@@ -26,8 +26,8 @@ class FakePat:
         self.connected += 1
         return "Telnet session completed. Received 1 message(s)."
 
-    def connect_packet(self, gateway, agw_port):
-        self.packet_sessions.append((gateway, agw_port))
+    def connect_packet(self, gateway, agw_port, via=""):
+        self.packet_sessions.append((gateway, agw_port, via))
         return "Packet session completed."
 
     def get_settings(self):
@@ -191,12 +191,16 @@ class UITest(unittest.TestCase):
         radio.path.write_text('{"custom": "keep"}', encoding="utf-8")
         radio.update("mac", "aa:bb:cc:dd:ee:ff")
         radio.update("gateway", "n0call-10")
-        self.assertEqual(radio.load(), {"custom": "keep", "mac": "AA:BB:CC:DD:EE:FF", "gateway": "N0CALL-10"})
+        radio.update("via", "w7mot-6")
+        self.assertEqual(radio.load(), {"custom": "keep", "mac": "AA:BB:CC:DD:EE:FF", "gateway": "N0CALL-10", "via": "W7MOT-6"})
         before = radio.path.read_bytes()
-        for field, value in (("mac", "bad"), ("gateway", "n0call-16")):
+        for field, value in (("mac", "bad"), ("gateway", "n0call-16"), ("via", "n0call-16"), ("via", "W7MOT-6,OTHER")):
             with self.assertRaises(ValueError):
                 radio.update(field, value)
             self.assertEqual(radio.path.read_bytes(), before)
+        radio.update("via", "  ")
+        self.assertEqual(radio.load()["via"], "")
+        self.assertEqual(radio.load()["gateway"], "N0CALL-10")
 
     def test_packet_requires_explicit_confirmation_and_cleans_up(self):
         events = []
@@ -210,20 +214,44 @@ class UITest(unittest.TestCase):
                 events.append("stop")
         self.ui.tnc_factory = FakeTNC
         self.ui.radio.update("mac", "AA:BB:CC:DD:EE:FF")
-        self.ui.radio.update("gateway", "N0RMS-10")
+        self.ui.radio.update("gateway", "KT7RUN-10")
+        self.ui.radio.update("via", "W7MOT-6")
         self.ui.packet_intro()
         self.assertIn("TRANSMIT", self.ui.text)
+        self.assertIn("Gateway: KT7RUN-10", self.ui.text)
+        self.assertIn("Via: W7MOT-6", self.ui.text)
         self.assertEqual(events, [])
         self.ui.input("ENTER")
-        self.assertEqual(self.ui.title, "TRANSMIT PACKET?")
+        self.assertEqual(self.ui.title, "TX KT7RUN-10?")
         self.assertEqual(self.ui.items[0][0], "Cancel")
+        self.assertEqual(self.ui.items[1][0], "Via W7MOT-6")
         self.ui.input("DOWN")
         self.ui.input("ENTER")
         self.wait_task()
         self.assertEqual(events, [("init", "AA:BB:CC:DD:EE:FF", "N0CALL", 8000), "start", "stop"])
-        self.assertEqual(self.backend.packet_sessions, [("N0RMS-10", 8000)])
+        self.assertEqual(self.backend.packet_sessions, [("KT7RUN-10", 8000, "W7MOT-6")])
         self.assertEqual(self.ui.title, "SESSION FINISHED")
         self.assertEqual(self.backend.connected, 0)
+
+    def test_packet_without_via_remains_direct_and_can_be_cancelled(self):
+        self.ui.radio.update("mac", "AA:BB:CC:DD:EE:FF")
+        self.ui.radio.update("gateway", "KT7RUN-10")
+        self.ui.packet_intro()
+        self.assertIn("Via: Direct", self.ui.text)
+        self.ui.input("ENTER")
+        self.assertEqual(self.ui.items[1][0], "Direct connection")
+        self.ui.input("ENTER")  # default is Cancel
+        self.assertEqual(self.backend.packet_sessions, [])
+
+    def test_packet_without_via_passes_direct_route_to_backend(self):
+        class FakeTNC:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        self.ui.tnc_factory = FakeTNC
+        self.ui.packet_connect({"mac": "AA:BB:CC:DD:EE:FF", "gateway": "KT7RUN-10"})
+        self.wait_task()
+        self.assertEqual(self.backend.packet_sessions, [("KT7RUN-10", 8000, "")])
 
     def test_packet_failure_cleans_up_and_preserves_telnet(self):
         events = []

@@ -291,17 +291,23 @@ class PatBackend:
             count = result.get("NumReceived", 0)
             return "Telnet session completed. Received %s message(s)." % count
 
-    def connect_packet(self, gateway, agw_port):
+    def connect_packet(self, gateway, agw_port, via=""):
         """Explicitly start one RF session using the caller's local AGWPE TNC.
 
         The caller must start and maintain the TNC for the session's lifetime.
         A KISS stream alone is insufficient: AGWPE must provide connected AX.25.
+        When present, ``via`` is a single digipeater callsign with optional SSID.
         """
         if not isinstance(gateway, str):
             raise PatError("Enter an AX.25 gateway callsign.")
         gateway = gateway.strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", gateway):
             raise PatError("Enter a gateway callsign and optional SSID 0-15.")
+        if not isinstance(via, str):
+            raise PatError("Enter one digipeater callsign, or leave it blank.")
+        via = via.strip().upper()
+        if via and not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", via):
+            raise PatError("Enter one digipeater callsign and SSID 0-15, or leave it blank.")
         if type(agw_port) is not int or not 1 <= agw_port <= 65535:
             raise PatError("The local packet TNC port is invalid.")
         with self._lock:
@@ -311,7 +317,10 @@ class PatBackend:
                 self.close()
                 self._agw_port = agw_port
             try:
-                result = json.loads(self._request("/api/connect", {"url": "ax25+agwpe:///" + gateway}, timeout=300))
+                # Pat 0.16's wl2k-go URL syntax puts each digipeater before
+                # the gateway. AGWPE encodes the resulting route as a 'v' frame.
+                target = (via + "/" if via else "") + gateway
+                result = json.loads(self._request("/api/connect", {"url": "ax25+agwpe:///" + target}, timeout=300))
                 count = result.get("NumReceived", 0)
             except PatTimeout as exc:
                 raise PatError("Packet session timed out; delivery status may be unknown. Check Sent and Outbox before retrying.") from exc
