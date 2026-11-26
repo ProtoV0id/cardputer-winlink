@@ -1,0 +1,5 @@
+# Python libraries for local development or non-Debian environments.
+Pillow>=9
+# Required on the Linux device; installed by Debian as python3-evdev.
+evdev>=1.6; sys_platform == "linux"
+# System dependencies: Python 3 and Pat (Debian package: pat).
