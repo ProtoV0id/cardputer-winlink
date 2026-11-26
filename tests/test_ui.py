@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from winlink_gui import BODY, UI, wrap
+from winlink_gui import BODY, ROWS, VIEW_LEFT, VIEW_WIDTH, UI, wrap
 
 
 class FakePat:
@@ -88,6 +88,60 @@ class UITest(unittest.TestCase):
                          "longunbrokenaddress")
         self.assertNotEqual(wrap("Hello World", width=width),
                             wrap("Hello World", width=width, prefer_words=True))
+
+    def test_whole_words_fit_exact_boundaries_and_indentation(self):
+        # A word that fits by itself must move intact when indentation or a
+        # preceding word would push even one letter outside the view.
+        width = BODY.getlength("world")
+        self.assertEqual(wrap("  world next", width=width, prefer_words=True),
+                         ["world", "next"])
+        boundary = BODY.getlength("hello world")
+        self.assertEqual(wrap("hello world next", width=boundary, prefer_words=True),
+                         ["hello world", "next"])
+        # Overflowing whitespace must not move a word that already fits.
+        width = BODY.getlength("hello world")
+        self.assertEqual(wrap("hello world  a", width=width, prefer_words=True),
+                         ["hello world", "a"])
+        self.assertEqual(wrap("a   b", width=100, prefer_words=True), ["a   b"])
+
+    def test_unbroken_address_wrap_and_blank_lines(self):
+        address = "very-long-unbroken-address+longuser@example.test"
+        width = BODY.getlength("address")
+        lines = wrap(address + "\r\n\r\nNext", width=width, prefer_words=True)
+        self.assertIn("", lines)
+        self.assertEqual("".join(lines[:-2]), address)
+        for line in lines:
+            if line:
+                self.assertLessEqual(max(BODY.getlength(line), BODY.getbbox(line)[2]), width)
+
+    def test_sent_and_received_views_fit_and_scroll_the_same_lines(self):
+        body = ("First line with several readable words and an "
+                "extraordinarily-long-unbroken-address@example.test\r\n\r\n" +
+                "Field report ready to deliver. " * 18)
+        for folder in ("in", "out", "sent"):
+            with self.subTest(folder=folder):
+                self.backend.read_message = lambda folder, mid: {
+                    "id": mid, "from": "TEST", "to": "N0CALL", "subject": "Field report",
+                    "body": body,
+                }
+                self.ui.open_message(folder, {"id": "ABC1"})
+                self.wait_task()
+                wrapped = wrap(self.ui.text, width=VIEW_WIDTH, prefer_words=True)
+                self.assertEqual("".join("".join(wrapped).split()),
+                                 "".join(self.ui.text.split()))
+                for line in wrapped:
+                    if line:
+                        self.assertLessEqual(max(BODY.getlength(line), BODY.getbbox(line)[2]), VIEW_WIDTH)
+                self.assertIn("", wrapped)
+                image = self.ui.draw()
+                # The right margin reserved for the scrollbar contains no
+                # text, even when the line is close to the width boundary.
+                margin = image.crop((VIEW_LEFT+VIEW_WIDTH, 32, 313, 142))
+                self.assertEqual(margin.getcolors(), [(margin.width * margin.height, image.getpixel((0, 32)))])
+                for _ in range(len(wrapped) + 3):
+                    self.ui.input("DOWN")
+                self.assertEqual(self.ui.top, max(0, len(wrapped) - ROWS))
+                self.ui.draw()
 
     def test_draft_queue_then_explicit_connect(self):
         self.ui.draft = {"to": "N0CALL@winlink.org", "subject": "Hi", "body": "Hello"}

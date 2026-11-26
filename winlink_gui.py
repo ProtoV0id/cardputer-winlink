@@ -3,6 +3,7 @@
 import argparse
 import os
 import queue
+import re
 import sys
 import threading
 
@@ -30,6 +31,56 @@ def font(size, bold=False):
 
 TITLE, BODY, SMALL = font(15, True), font(15), font(11)
 ROWS = 5
+# The message is inset on both sides, leaving space for the scroll indicator.
+VIEW_LEFT = 12
+VIEW_WIDTH = W - VIEW_LEFT - 12
+
+
+def _fits(text, width, face):
+    """Include ink overhangs as well as the font's horizontal advance."""
+    if not text:
+        return True
+    return max(face.getlength(text), face.getbbox(text)[2]) <= width
+
+
+def _wrap_words(paragraph, width, face):
+    """Wrap at whitespace, breaking a word only if it cannot fit by itself.
+
+    Spaces within lines and initial indentation are preserved where they fit;
+    whitespace at a soft line break is represented by the break itself. This
+    affects rendering only. A single glyph wider than the screen must be
+    emitted on its own line; the view clips it to the content area.
+    """
+    lines, line, spaces = [], "", ""
+    for token in re.findall(r" +|[^ ]+", paragraph):
+        if token.isspace():
+            spaces += token
+            continue
+        candidate = line + spaces + token
+        if _fits(candidate, width, face):
+            line = candidate
+        else:
+            if line:
+                lines.append(line)
+                line = ""
+                spaces = ""
+            # Drop initial indentation only when it would split a word that
+            # otherwise fits on a fresh line.
+            if _fits(spaces + token, width, face):
+                line = spaces + token
+            elif _fits(token, width, face):
+                line = token
+            else:
+                # An unbroken URL or other overlong token needs hard breaks.
+                for char in token:
+                    if line and not _fits(line + char, width, face):
+                        lines.append(line)
+                        line = ""
+                    line += char
+        spaces = ""
+    if line or not lines:
+        lines.append(line)
+    return lines
 
 
 def fit(value, width, face=BODY):
@@ -55,16 +106,14 @@ def wrap(text, width=300, face=BODY, prefer_words=False):
         if not paragraph:
             result.append("")
             continue
+        if prefer_words:
+            result.extend(_wrap_words(paragraph, width, face))
+            continue
         line = ""
         for ch in paragraph:
             if line and face.getlength(line + ch) > width:
-                split = line.rfind(" ") if prefer_words else -1
-                if split > 0 and line[:split].strip():
-                    result.append(line[:split].rstrip())
-                    line = line[split+1:].lstrip()
-                else:
-                    result.append(line)
-                    line = ""
+                result.append(line)
+                line = ""
             line += ch
         result.append(line)
     return result or [""]
@@ -100,6 +149,9 @@ class UI:
 
     def view(self, title, text, back=None):
         self.mode, self.title, self.text = "view", title, str(text)
+        # Message text is immutable for the lifetime of the view. Wrap once
+        # to keep keyboard scrolling responsive even for long messages.
+        self.view_lines = wrap(self.text, width=VIEW_WIDTH, prefer_words=True)
         self.top = 0
         self.back = back or self.home
         self.accept = None
@@ -266,7 +318,7 @@ class UI:
             if key in ("UP", "LEFT"):
                 self.top = max(0, self.top - 1)
             elif key in ("DOWN", "RIGHT"):
-                self.top = min(max(0, len(wrap(self.text, prefer_words=True)) - ROWS), self.top + 1)
+                self.top = min(max(0, len(self.view_lines) - ROWS), self.top + 1)
             elif key == "ENTER" and hasattr(self, "accept") and self.accept:
                 action, self.accept = self.accept, None
                 action()
@@ -340,8 +392,20 @@ class UI:
                 d.text((12, 32+row*22), line, font=BODY, fill=TEXT)
             hint = "SHIFT+ENTER SAVE   ESC BACK" if self.multiline else "ENTER SAVE   ESC BACK"
         else:
-            for row, line in enumerate(wrap(self.text, prefer_words=True)[self.top:self.top+ROWS] if self.mode == "view" else wrap(self.text, prefer_words=True)[:ROWS]):
-                d.text((12, 32+row*22), line, font=BODY, fill=TEXT)
+            wrapped = self.view_lines if self.mode == "view" else wrap(self.text, width=VIEW_WIDTH, prefer_words=True)
+            start = self.top if self.mode == "view" else 0
+            # Clip glyph ink at the right and bottom edges, including the
+            # unusual case of a single glyph wider than the available width.
+            area = Image.new("RGB", (VIEW_WIDTH, 110), BG)
+            area_draw = ImageDraw.Draw(area)
+            for row, line in enumerate(wrapped[start:start+ROWS]):
+                area_draw.text((0, row*22), line, font=BODY, fill=TEXT)
+            image.paste(area, (VIEW_LEFT, 32))
+            if self.mode == "view" and len(wrapped) > ROWS:
+                d.line((316, 33, 316, 141), fill=DIVIDER, width=2)
+                thumb_h = max(8, int(108 * ROWS / len(wrapped)))
+                thumb_y = 33 + int((108 - thumb_h) * self.top / (len(wrapped) - ROWS))
+                d.line((316, thumb_y, 316, thumb_y + thumb_h), fill=ACCENT, width=2)
             if self.mode == "busy":
                 hint = "PLEASE WAIT"
             elif self.accept:
