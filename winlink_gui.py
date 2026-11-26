@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """PocketLink: a keyboard-first Pat Winlink interface for Cardputer Zero."""
 import argparse
+import json
 import os
+from pathlib import Path
 import queue
 import re
 import sys
+import tempfile
 import threading
 
 from PIL import Image, ImageDraw, ImageFont
@@ -119,9 +122,61 @@ def wrap(text, width=300, face=BODY, prefer_words=False):
     return result or [""]
 
 
+class RadioSettings:
+    """PocketLink-only packet settings, independent of Pat's configuration."""
+    def __init__(self, path=None):
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        self.path = Path(path) if path else config_home / "pocketlink" / "radio.json"
+
+    def load(self):
+        if not self.path.exists():
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("expected a JSON object")
+            return data
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Cannot read packet settings: " + str(exc)) from exc
+
+    def update(self, field, value):
+        value = value.strip().upper()
+        if field == "mac":
+            if not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", value):
+                raise ValueError("Enter the Bluetooth address as AA:BB:CC:DD:EE:FF.")
+        elif field == "gateway":
+            if not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", value):
+                raise ValueError("Enter a gateway callsign, optionally with SSID 0-15.")
+        else:
+            raise ValueError("Unknown packet setting.")
+        try:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            before = self.path.read_bytes() if self.path.exists() else None
+            data = self.load()
+            data[field] = value
+            fd, temp = tempfile.mkstemp(prefix=".radio-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(data, stream, indent=2)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                current = self.path.read_bytes() if self.path.exists() else None
+                if current != before:
+                    raise RuntimeError("Packet settings changed; please retry.")
+                os.replace(temp, self.path)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        except OSError as exc:
+            raise RuntimeError("Cannot save packet settings: " + str(exc)) from exc
+
+
 class UI:
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, radio_config_path=None, tnc_factory=None):
         self.backend = backend or PatBackend()
+        self.radio = RadioSettings(radio_config_path)
+        self.tnc_factory = tnc_factory
         self.results = queue.Queue()
         self.draft = {"to": "", "subject": "", "body": ""}
         self.settings = {}
@@ -139,6 +194,8 @@ class UI:
             ("Outbox", lambda: self.folder("out")),
             ("Sent messages", lambda: self.folder("sent")),
             ("Connect via Telnet", self.connect_confirm),
+            ("Connect via packet", self.packet_intro),
+            ("Packet radio settings", self.packet_settings),
             ("Settings", self.load_settings),
             ("About / help", self.help),
             ("Exit", self.quit),
@@ -155,6 +212,7 @@ class UI:
         self.top = 0
         self.back = back or self.home
         self.accept = None
+        self.accept_hint = "F/X SCROLL   ENTER NEXT   ESC BACK"
 
     def edit(self, title, value, done, back, multiline=False, secret=False):
         self.mode, self.title, self.text = "edit", title, str(value)
@@ -243,6 +301,7 @@ class UI:
         self.view("REVIEW DRAFT", "To: " + self.draft["to"] + "\nSubject: " + self.draft["subject"] +
                   "\n\n" + self.draft["body"], self.compose)
         self.accept = self.queue_confirm
+        self.accept_hint = "F/X SCROLL   ENTER QUEUE   ESC EDIT"
 
     def queue_confirm(self):
         self.menu("QUEUE MESSAGE?", [("Queue in Pat outbox", self.queue_draft),
@@ -252,7 +311,7 @@ class UI:
         snapshot = self.draft.copy()
         def complete(_):
             self.draft = {"to": "", "subject": "", "body": ""}
-            self.view("QUEUED", "Message saved in Pat's outbox. Connect via Telnet to send it.")
+            self.view("QUEUED", "Message saved in Pat's outbox. Connect via Telnet or packet to send it.")
         self.task("QUEUING MESSAGE", lambda: self.backend.queue_message(snapshot["to"], snapshot["subject"], snapshot["body"]),
                   complete, self.compose)
 
@@ -265,6 +324,79 @@ class UI:
     def connect(self):
         self.task("TELNET SESSION", self.backend.connect_telnet,
                   lambda output: self.view("SESSION FINISHED", output or "Session completed."))
+
+    def packet_settings(self):
+        try:
+            settings = self.radio.load()
+        except Exception as exc:
+            self.view("PACKET SETTINGS", str(exc), self.home)
+            return
+        self.menu("PACKET SETTINGS", [
+            ("Bluetooth: " + (settings.get("mac") or "(set address)"), lambda: self.edit_radio_setting("mac")),
+            ("Gateway: " + (settings.get("gateway") or "(set callsign)"), lambda: self.edit_radio_setting("gateway")),
+            ("Setup help", self.packet_help),
+            ("Back", self.home),
+        ], self.home)
+
+    def edit_radio_setting(self, field):
+        try:
+            current = self.radio.load().get(field, "")
+        except Exception as exc:
+            self.view("PACKET SETTINGS", str(exc), self.home)
+            return
+        def save(value):
+            try:
+                self.radio.update(field, value)
+            except Exception as exc:
+                self.view("INVALID SETTING", str(exc), self.packet_settings)
+                return
+            self.packet_settings()
+        self.edit("BLUETOOTH ADDRESS" if field == "mac" else "RMS GATEWAY CALL",
+                  current, save, self.packet_settings)
+
+    def packet_help(self):
+        self.view("PACKET SETUP", "Pair your UV-PRO with the Cardputer using Bluetooth. "
+                  "Enable KISS TNC on the radio. Enter its Bluetooth address and an RMS gateway callsign here.\n\n"
+                  "Set and verify the radio's KISS frequency and 1200-baud packet settings for that gateway. "
+                  "Check your radio and gateway instructions before transmitting.", self.packet_settings)
+
+    def packet_intro(self):
+        try:
+            settings = self.radio.load()
+        except Exception as exc:
+            self.view("PACKET SETTINGS", str(exc), self.home)
+            return
+        if not settings.get("mac") or not settings.get("gateway"):
+            self.view("PACKET SETUP NEEDED", "Enter the Bluetooth address and RMS gateway callsign in Packet radio settings.",
+                      self.packet_settings)
+            return
+        self.view("PACKET RADIO", "This session will TRANSMIT via the UV-PRO.\n\n"
+                  "Pair the radio, enable KISS TNC, and verify its packet frequency and 1200 baud match the gateway.\n\n"
+                  "Gateway: " + str(settings["gateway"]) + "\n\nPress Enter to choose whether to connect.", self.home)
+        self.accept = lambda: self.packet_confirm(settings)
+
+    def packet_confirm(self, settings):
+        self.menu("TRANSMIT PACKET?", [
+            ("Cancel", self.home),
+            ("TX to " + str(settings["gateway"]), lambda: self.packet_connect(settings)),
+        ], self.home)
+
+    def packet_connect(self, settings):
+        def work():
+            call = self.backend.get_settings().get("callsign", "")
+            if not call:
+                raise RuntimeError("Set your callsign in Settings before starting a packet session.")
+            factory = self.tnc_factory
+            if factory is None:
+                from uvpro_tnc import UVProTNC
+                factory = UVProTNC
+            # The helper reporting an open local listener does not prove
+            # Bluetooth connectivity or over-the-air delivery. Only report
+            # Pat's completed session result after it returns.
+            with factory(settings["mac"], call, port=8000):
+                return self.backend.connect_packet(settings["gateway"], 8000)
+        self.task("PACKET SESSION", work,
+                  lambda output: self.view("SESSION FINISHED", output or "Packet session completed."), self.home)
 
     def load_settings(self):
         def loaded(settings):
@@ -298,8 +430,8 @@ class UI:
         self.view("HELP", "F/X or arrows move. Enter selects. Esc goes back.\n\n"
                   "In message body: Enter adds a line; Shift+Enter saves. "
                   "Left/right moves the cursor.\n\n"
-                  "Queue a message, then connect via Telnet to send and receive. "
-                  "Requires Wi-Fi, Pat, and a qualifying Winlink account. "
+                  "Queue a message, then use Telnet or packet to send and receive. "
+                  "Packet needs a paired KISS radio and a reachable gateway. "
                   "Pat stores the password and mail on this device.")
 
     def input(self, key, char=None, ctrl=False):
@@ -348,8 +480,7 @@ class UI:
     def draw(self):
         image = Image.new("RGB", (W, H), BG)
         d = ImageDraw.Draw(image)
-        # Header: the TELNET badge names the selected transport; it does not
-        # claim the network or Winlink server is connected.
+        # The badge names the mail service, not connection or radio status.
         d.rectangle((0, 0, W, 27), fill=PANEL)
         d.rectangle((0, 0, 3, 27), fill=ACCENT)
         d.line((0, 27, W, 27), fill=EDGE)
@@ -357,7 +488,7 @@ class UI:
         if self.mode == "menu":
             if self.title == "POCKETLINK":
                 d.rounded_rectangle((259, 6, 311, 21), radius=3, fill=BADGE, outline=EDGE)
-                d.text((265, 8), "TELNET", font=SMALL, fill=ACCENT)
+                d.text((263, 8), "WINLINK", font=SMALL, fill=ACCENT)
             else:
                 counter = f"{self.sel+1}/{len(self.items)}"
                 d.text((310-SMALL.getlength(counter), 8), counter, font=SMALL, fill=ACCENT)
@@ -409,7 +540,7 @@ class UI:
             if self.mode == "busy":
                 hint = "PLEASE WAIT"
             elif self.accept:
-                hint = "F/X SCROLL   ENTER QUEUE   ESC EDIT"
+                hint = self.accept_hint
             else:
                 hint = "F/X SCROLL    ENTER / ESC BACK"
         d.rectangle((0, 150, W, H), fill=PANEL)

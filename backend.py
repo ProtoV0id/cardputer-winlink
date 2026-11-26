@@ -40,6 +40,7 @@ class PatBackend:
         self._base = None
         self._runtime = None
         self._lock = threading.RLock()
+        self._agw_port = None
 
     def available(self):
         return bool(self.executable)
@@ -103,6 +104,20 @@ class PatBackend:
             except OSError as exc:
                 raise PatError("Cannot save Pat configuration: " + str(exc)) from exc
 
+    def _runtime_config(self, http_port):
+        """Prepare child-only settings without editing the user's Pat config."""
+        config = self._config()
+        config.update({"listen": [], "schedule": {}, "version_reporting_disabled": True,
+                       "http_addr": "127.0.0.1:" + str(http_port), "hamlib_rigs": {}})
+        gps = dict(config.get("gpsd") or {})
+        gps.update({"update_locator": False, "enable_http": False})
+        config["gpsd"] = gps
+        if self._agw_port is not None:
+            # Only the app-managed, loopback AGWPE service may handle this RF
+            # session; a previous user-configured remote endpoint is not used.
+            config["agwpe"] = {"addr": "127.0.0.1:" + str(self._agw_port), "radio_port": 0}
+        return config
+
     def _start(self):
         if self._process is not None and self._process.poll() is None:
             return
@@ -121,12 +136,7 @@ class PatBackend:
         state_dir.mkdir(parents=True, exist_ok=True)
         self._runtime = tempfile.TemporaryDirectory(prefix="pat-", dir=state_dir)
         runtime_config = Path(self._runtime.name) / "config.json"
-        config = self._config()
-        config.update({"listen": [], "schedule": {}, "version_reporting_disabled": True,
-                       "http_addr": "127.0.0.1:" + str(port), "hamlib_rigs": {}})
-        gps = dict(config.get("gpsd") or {})
-        gps.update({"update_locator": False, "enable_http": False})
-        config["gpsd"] = gps
+        config = self._runtime_config(port)
         with runtime_config.open("w", encoding="utf-8") as stream:
             json.dump(config, stream)
         try:
@@ -280,3 +290,31 @@ class PatBackend:
                 raise PatError("Pat returned an unreadable session result.") from exc
             count = result.get("NumReceived", 0)
             return "Telnet session completed. Received %s message(s)." % count
+
+    def connect_packet(self, gateway, agw_port):
+        """Explicitly start one RF session using the caller's local AGWPE TNC.
+
+        The caller must start and maintain the TNC for the session's lifetime.
+        A KISS stream alone is insufficient: AGWPE must provide connected AX.25.
+        """
+        if not isinstance(gateway, str):
+            raise PatError("Enter an AX.25 gateway callsign.")
+        gateway = gateway.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?", gateway):
+            raise PatError("Enter a gateway callsign and optional SSID 0-15.")
+        if type(agw_port) is not int or not 1 <= agw_port <= 65535:
+            raise PatError("The local packet TNC port is invalid.")
+        with self._lock:
+            if self._agw_port != agw_port:
+                # Pat reads configuration only at launch. Stop the previous
+                # child before changing its private configuration.
+                self.close()
+                self._agw_port = agw_port
+            try:
+                result = json.loads(self._request("/api/connect", {"url": "ax25+agwpe:///" + gateway}, timeout=300))
+                count = result.get("NumReceived", 0)
+            except PatTimeout as exc:
+                raise PatError("Packet session timed out; delivery status may be unknown. Check Sent and Outbox before retrying.") from exc
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise PatError("Pat returned an unreadable packet session result.") from exc
+            return "Packet session completed. Received %s message(s)." % count

@@ -1,13 +1,16 @@
 import time
 import unittest
+import tempfile
+from pathlib import Path
 
-from winlink_gui import BODY, ROWS, VIEW_LEFT, VIEW_WIDTH, UI, wrap
+from winlink_gui import BODY, ROWS, VIEW_LEFT, VIEW_WIDTH, RadioSettings, UI, wrap
 
 
 class FakePat:
     def __init__(self):
         self.queued = []
         self.connected = 0
+        self.packet_sessions = []
         self.settings = {"callsign": "N0CALL", "locator": "DM33", "has_password": True}
 
     def list_messages(self, folder):
@@ -23,6 +26,10 @@ class FakePat:
         self.connected += 1
         return "Telnet session completed. Received 1 message(s)."
 
+    def connect_packet(self, gateway, agw_port):
+        self.packet_sessions.append((gateway, agw_port))
+        return "Packet session completed."
+
     def get_settings(self):
         return self.settings.copy()
 
@@ -33,8 +40,10 @@ class FakePat:
 
 class UITest(unittest.TestCase):
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.backend = FakePat()
-        self.ui = UI(self.backend)
+        self.ui = UI(self.backend, radio_config_path=Path(self.temp.name) / "radio.json")
 
     def wait_task(self):
         for _ in range(100):
@@ -66,11 +75,11 @@ class UITest(unittest.TestCase):
         self.assertEqual(message.getpixel((210, 15)), (16, 42, 59))
 
     def test_menu_scroll_retains_access_to_all_actions(self):
-        for _ in range(7):
+        for _ in range(len(self.ui.items) - 1):
             self.ui.input("DOWN")
         self.assertEqual(self.ui.items[self.ui.sel][0], "Exit")
         self.ui.draw()
-        self.assertEqual(self.ui.top, 4)
+        self.assertEqual(self.ui.top, len(self.ui.items) - 4)
         self.ui.input("DOWN")
         self.ui.draw()
         self.assertEqual(self.ui.items[self.ui.sel][0], "Inbox")
@@ -176,6 +185,61 @@ class UITest(unittest.TestCase):
         self.assertEqual(self.ui.title, "COMPOSE")
         self.assertEqual(self.ui.draft["body"], "Hello")
         self.assertFalse(self.backend.queued)
+
+    def test_packet_settings_preserve_existing_fields_and_reject_invalid(self):
+        radio = RadioSettings(Path(self.temp.name) / "radio.json")
+        radio.path.write_text('{"custom": "keep"}', encoding="utf-8")
+        radio.update("mac", "aa:bb:cc:dd:ee:ff")
+        radio.update("gateway", "n0call-10")
+        self.assertEqual(radio.load(), {"custom": "keep", "mac": "AA:BB:CC:DD:EE:FF", "gateway": "N0CALL-10"})
+        before = radio.path.read_bytes()
+        for field, value in (("mac", "bad"), ("gateway", "n0call-16")):
+            with self.assertRaises(ValueError):
+                radio.update(field, value)
+            self.assertEqual(radio.path.read_bytes(), before)
+
+    def test_packet_requires_explicit_confirmation_and_cleans_up(self):
+        events = []
+        class FakeTNC:
+            def __init__(self, mac, callsign, port):
+                events.append(("init", mac, callsign, port))
+            def __enter__(self):
+                events.append("start")
+                return self
+            def __exit__(self, *args):
+                events.append("stop")
+        self.ui.tnc_factory = FakeTNC
+        self.ui.radio.update("mac", "AA:BB:CC:DD:EE:FF")
+        self.ui.radio.update("gateway", "N0RMS-10")
+        self.ui.packet_intro()
+        self.assertIn("TRANSMIT", self.ui.text)
+        self.assertEqual(events, [])
+        self.ui.input("ENTER")
+        self.assertEqual(self.ui.title, "TRANSMIT PACKET?")
+        self.assertEqual(self.ui.items[0][0], "Cancel")
+        self.ui.input("DOWN")
+        self.ui.input("ENTER")
+        self.wait_task()
+        self.assertEqual(events, [("init", "AA:BB:CC:DD:EE:FF", "N0CALL", 8000), "start", "stop"])
+        self.assertEqual(self.backend.packet_sessions, [("N0RMS-10", 8000)])
+        self.assertEqual(self.ui.title, "SESSION FINISHED")
+        self.assertEqual(self.backend.connected, 0)
+
+    def test_packet_failure_cleans_up_and_preserves_telnet(self):
+        events = []
+        class FakeTNC:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): events.append("stop")
+        self.ui.tnc_factory = FakeTNC
+        self.backend.connect_packet = lambda *args: (_ for _ in ()).throw(RuntimeError("radio failed"))
+        self.ui.packet_connect({"mac": "AA:BB:CC:DD:EE:FF", "gateway": "N0RMS"})
+        self.wait_task()
+        self.assertEqual(events, ["stop"])
+        self.assertIn("radio failed", self.ui.text)
+        self.ui.connect()
+        self.wait_task()
+        self.assertEqual(self.backend.connected, 1)
 
     def test_edit_cursor_and_password_mask(self):
         self.ui.edit_draft("body")

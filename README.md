@@ -1,6 +1,6 @@
 # PocketLink
 
-An experimental, keyboard-operated graphical interface for [Pat Winlink](https://getpat.io/) on the M5Stack Cardputer Zero. This first version supports Internet Telnet sessions. It can read Pat's inbox, outbox and sent folders; compose and queue text messages; and send and receive when the operator explicitly starts a session.
+An experimental, keyboard-operated graphical interface for [Pat Winlink](https://getpat.io/) on the M5Stack Cardputer Zero. It supports Internet Telnet and an experimental Bluetooth packet path for the BTECH UV-PRO's KISS TNC. It can read Pat's inbox, outbox and sent folders; compose and queue text messages; and send and receive when the operator explicitly starts a session.
 
 The package adds **PocketLink** to the APPLaunch application wheel. It is an independent interface that uses Pat and Winlink. See [LAUNCHER-SETUP.md](LAUNCHER-SETUP.md) for the full instructions. A previous version completed a Telnet round trip on a Cardputer Zero; this version's updated interface and launcher entry still need on-device verification.
 
@@ -20,7 +20,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.2.2_all.deb
+sudo apt install ./dist/cardputer-winlink_0.3.0_all.deb
 ```
 
 The final command installs the app, Pat, Pillow, and evdev using the device's configured Debian repositories. The package requires Pat 0.16.0 or newer; if apt cannot satisfy a dependency, stop and check your Cardputer's OS and package sources. If `~/cardputer-winlink` already exists, Git refuses to overwrite it; inspect the existing folder before choosing a different destination.
@@ -35,6 +35,8 @@ ls -l /usr/share/APPLaunch/applications/cardputer-winlink.desktop
 
 Then use the Cardputer's own screen to find **PocketLink** in the application wheel. If it is absent, restart APPLaunch or reboot and check again. These checks confirm installed files and Pat's executable; the application still needs to be opened and tested on the device.
 
+For a UV-PRO Bluetooth packet session, complete the separate [UV-PRO setup](UVPRO-SETUP.md), including installing `tncd`, pairing, and manually checking the radio's KISS frequencies. Neither the bridge nor an RF session starts automatically; Telnet does not require the bridge.
+
 ## Update an existing installation
 
 Close the app on the Cardputer, connect over SSH, and run:
@@ -44,7 +46,7 @@ cd ~/cardputer-winlink
 git pull --ff-only
 build_dir=$(mktemp -d)
 python3 build_package.py --output-dir "$build_dir"
-sudo apt install "$build_dir/cardputer-winlink_0.2.2_all.deb"
+sudo apt install "$build_dir/cardputer-winlink_0.3.0_all.deb"
 ```
 
 The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. The Debian package and existing installation paths remain named `cardputer-winlink`, so this upgrades the previous version instead of installing a second app. The wheel entry is renamed PocketLink. The upgrade leaves Pat's configuration and mail in their existing locations.
@@ -72,7 +74,7 @@ The built-in keypad translation follows M5Stack's v5 Zero driver and keymap. Ver
 
 - Pat stores its configuration in `~/.config/pat/config.json` by default and its mailbox in its usual data directory. This front end preserves other existing Pat settings and mail. Configuration and mailbox paths can depend on the user's XDG environment.
 - The Winlink password is stored in Pat's configuration, and messages are stored on the device; they are not encrypted at rest by this app. A loopback-only Pat process uses a temporary private configuration copy while the app runs and is shut down on normal exit. Avoid running multiple front ends that modify Pat configuration at the same time.
-- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. Radio and modem support are outside this Telnet-first version.
+- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. The optional UV-PRO packet path uses separately installed `tncd` 2.1.0; see [UVPRO-SETUP.md](UVPRO-SETUP.md). It has not been tested on a Cardputer or UV-PRO.
 - This is an early build. A local preview or mocked test is not proof of the on-device keyboard, display, application wheel, Pat version compatibility, or an actual Winlink session.
 
 ## Local development

@@ -104,6 +104,49 @@ class PatBackendTests(unittest.TestCase):
             self.backend.connect_telnet()
         self.assertEqual(calls, ["/api/connect"])
 
+    def test_packet_session_is_explicit_and_uses_local_agwpe(self):
+        config = json.loads(self.config.read_text())
+        config["agwpe"] = {"addr": "example.invalid:8000", "radio_port": 2}
+        self.config.write_text(json.dumps(config))
+        original = self.config.read_bytes()
+        self.backend.queue_message("TEST", "Subject", "Text")
+        self.assertEqual(self.backend.calls[-1][0], "/api/mailbox/out")
+        self.assertIsNone(self.backend._agw_port)
+        self.assertIn("Received 2", self.backend.connect_packet(" w1aw-10 ", 54321))
+        self.assertEqual(self.backend.calls[-1],
+                         ("/api/connect", {"url": "ax25+agwpe:///W1AW-10"}))
+        child = self.backend._runtime_config(23456)
+        self.assertEqual(child["agwpe"], {"addr": "127.0.0.1:54321", "radio_port": 0})
+        self.assertEqual(child["http_addr"], "127.0.0.1:23456")
+        self.assertEqual(child["listen"], [])
+        self.assertEqual(child["schedule"], {})
+        self.assertEqual(self.config.read_bytes(), original)
+        # Switching transport is an explicit request, not an RF-to-Telnet fallback.
+        self.backend.connect_telnet()
+        self.assertTrue(self.backend.calls[-1][1]["url"].startswith("telnet://"))
+
+    def test_packet_rejects_invalid_gateways_and_ports_without_request(self):
+        for gateway in ("", "W1AW-16", "TOO-LONG-CALL", "W1AW/path", "foo:123", None):
+            with self.subTest(gateway=gateway):
+                with self.assertRaises(PatError):
+                    self.backend.connect_packet(gateway, 8000)
+        for port in (0, 65536, -1, "8000", True):
+            with self.subTest(port=port):
+                with self.assertRaises(PatError):
+                    self.backend.connect_packet("W1AW-10", port)
+        self.assertEqual(self.backend.calls, [])
+        self.assertIsNone(self.backend._agw_port)
+
+    def test_packet_timeout_does_not_retry_or_fall_back(self):
+        calls = []
+        def timed_out(path, data=None, **kwargs):
+            calls.append((path, data))
+            raise PatTimeout("timeout")
+        self.backend._request = timed_out
+        with self.assertRaisesRegex(PatError, "delivery status may be unknown"):
+            self.backend.connect_packet("W1AW-10", 8000)
+        self.assertEqual(calls, [("/api/connect", {"url": "ax25+agwpe:///W1AW-10"})])
+
 
 if __name__ == "__main__":
     unittest.main()
