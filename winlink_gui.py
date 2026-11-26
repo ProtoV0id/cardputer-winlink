@@ -34,6 +34,7 @@ def font(size, bold=False):
 
 TITLE, BODY, SMALL = font(15, True), font(15), font(11)
 ROWS = 5
+_PACKET_CANCELLED = object()
 # The message is inset on both sides, leaving space for the scroll indicator.
 VIEW_LEFT = 12
 VIEW_WIDTH = W - VIEW_LEFT - 12
@@ -178,6 +179,7 @@ class UI:
         self.backend = backend or PatBackend()
         self.radio = RadioSettings(radio_config_path)
         self.tnc_factory = tnc_factory
+        self._packet_control = None
         self.results = queue.Queue()
         self.draft = {"to": "", "subject": "", "body": ""}
         self.settings = {}
@@ -203,6 +205,9 @@ class UI:
         ], self.quit)
 
     def quit(self):
+        # Do not release the framebuffer or stop Pat while a worker is active.
+        if self.mode == "busy":
+            return
         self.mode = "quit"
 
     def view(self, title, text, back=None):
@@ -237,6 +242,7 @@ class UI:
             ok, value, done, back = self.results.get_nowait()
         except queue.Empty:
             return
+        self._packet_control = None
         if ok:
             try:
                 done(value)
@@ -388,21 +394,38 @@ class UI:
         ], self.home)
 
     def packet_connect(self, settings):
+        # The same lock gates cancellation and admission to the Pat session.
+        # Once admitted, Escape cannot claim the radio operation was canceled.
+        control = {"lock": threading.Lock(), "cancel": threading.Event(), "phase": "starting"}
+        self._packet_control = control
         def work():
-            call = self.backend.get_settings().get("callsign", "")
-            if not call:
-                raise RuntimeError("Set your callsign in Settings before starting a packet session.")
-            factory = self.tnc_factory
-            if factory is None:
-                from uvpro_tnc import UVProTNC
-                factory = UVProTNC
-            # The helper reporting an open local listener does not prove
-            # Bluetooth connectivity or over-the-air delivery. Only report
-            # Pat's completed session result after it returns.
-            with factory(settings["mac"], call, port=8000):
-                return self.backend.connect_packet(settings["gateway"], 8000, settings.get("via") or "")
-        self.task("PACKET SESSION", work,
-                  lambda output: self.view("SESSION FINISHED", output or "Packet session completed."), self.home)
+            try:
+                call = self.backend.get_settings().get("callsign", "")
+                if not call:
+                    raise RuntimeError("Set your callsign in Settings before starting a packet session.")
+                factory = self.tnc_factory
+                if factory is None:
+                    from uvpro_tnc import UVProTNC
+                    factory = UVProTNC
+                # A local listener alone does not prove Bluetooth or RF status.
+                with factory(settings["mac"], call, port=8000, cancel_event=control["cancel"]):
+                    with control["lock"]:
+                        if control["cancel"].is_set():
+                            return _PACKET_CANCELLED
+                        control["phase"] = "session"
+                    return self.backend.connect_packet(settings["gateway"], 8000, settings.get("via") or "")
+            except Exception:
+                with control["lock"]:
+                    cancelled = control["cancel"].is_set() and control["phase"] != "session"
+                if cancelled:
+                    return _PACKET_CANCELLED
+                raise
+        def complete(output):
+            if output is _PACKET_CANCELLED:
+                self.view("PACKET CANCELED", "Bluetooth setup canceled. The packet session was not started.")
+            else:
+                self.view("SESSION FINISHED", output or "Packet session completed.")
+        self.task("PACKET SESSION", work, complete, self.home)
 
     def load_settings(self):
         def loaded(settings):
@@ -441,7 +464,15 @@ class UI:
                   "Pat stores the password and mail on this device.")
 
     def input(self, key, char=None, ctrl=False):
-        if self.mode in ("busy", "quit"):
+        if self.mode == "busy":
+            control = self._packet_control
+            if key == "ESC" and control is not None:
+                with control["lock"]:
+                    if control["phase"] == "starting":
+                        control["phase"] = "canceling"
+                        control["cancel"].set()
+            return
+        if self.mode == "quit":
             return
         if self.mode == "menu":
             if key in ("UP", "LEFT"):
@@ -529,7 +560,20 @@ class UI:
                 d.text((12, 32+row*22), line, font=BODY, fill=TEXT)
             hint = "SHIFT+ENTER SAVE   ESC BACK" if self.multiline else "ENTER SAVE   ESC BACK"
         else:
-            wrapped = self.view_lines if self.mode == "view" else wrap(self.text, width=VIEW_WIDTH, prefer_words=True)
+            busy_hint = "PLEASE WAIT"
+            if self.mode == "busy" and self._packet_control is not None:
+                with self._packet_control["lock"]:
+                    phase = self._packet_control["phase"]
+                if phase == "starting":
+                    busy_text = "Connecting to radio...\nThis may take up to 2.5 minutes.\n\nEsc cancels Bluetooth setup."
+                    busy_hint = "ESC CANCEL SETUP"
+                elif phase == "canceling":
+                    busy_text = "Canceling Bluetooth setup...\nPlease wait for cleanup."
+                else:
+                    busy_text = "Packet session in progress.\nPlease wait for its result.\n\nEsc cannot cancel this session."
+            else:
+                busy_text = self.text
+            wrapped = self.view_lines if self.mode == "view" else wrap(busy_text, width=VIEW_WIDTH, prefer_words=True)
             start = self.top if self.mode == "view" else 0
             # Clip glyph ink at the right and bottom edges, including the
             # unusual case of a single glyph wider than the available width.
@@ -544,7 +588,7 @@ class UI:
                 thumb_y = 33 + int((108 - thumb_h) * self.top / (len(wrapped) - ROWS))
                 d.line((316, thumb_y, 316, thumb_y + thumb_h), fill=ACCENT, width=2)
             if self.mode == "busy":
-                hint = "PLEASE WAIT"
+                hint = busy_hint
             elif self.accept:
                 hint = self.accept_hint
             else:

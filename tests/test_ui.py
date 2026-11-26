@@ -1,4 +1,5 @@
 import time
+import threading
 import unittest
 import tempfile
 from pathlib import Path
@@ -205,7 +206,7 @@ class UITest(unittest.TestCase):
     def test_packet_requires_explicit_confirmation_and_cleans_up(self):
         events = []
         class FakeTNC:
-            def __init__(self, mac, callsign, port):
+            def __init__(self, mac, callsign, port, cancel_event):
                 events.append(("init", mac, callsign, port))
             def __enter__(self):
                 events.append("start")
@@ -268,6 +269,61 @@ class UITest(unittest.TestCase):
         self.ui.connect()
         self.wait_task()
         self.assertEqual(self.backend.connected, 1)
+
+    def test_packet_escape_during_setup_cleans_up_without_starting_pat(self):
+        ready, release = threading.Event(), threading.Event()
+        events = []
+        class BlockingTNC:
+            def __init__(self, *args, cancel_event, **kwargs):
+                self.cancel_event = cancel_event
+            def __enter__(self):
+                ready.set()
+                if not release.wait(3):
+                    raise RuntimeError("test timed out")
+                return self
+            def __exit__(self, *args):
+                events.append("stopped")
+        self.ui.tnc_factory = BlockingTNC
+        self.ui.packet_connect({"mac": "AA:BB:CC:DD:EE:FF", "gateway": "KT7RUN-10"})
+        self.assertTrue(ready.wait(2))
+        self.ui.input("ESC")
+        self.assertEqual(self.ui.mode, "busy")
+        self.assertTrue(self.ui._packet_control["cancel"].is_set())
+        self.ui.quit()
+        self.assertEqual(self.ui.mode, "busy")
+        release.set()
+        self.wait_task()
+        self.assertEqual(events, ["stopped"])
+        self.assertEqual(self.backend.packet_sessions, [])
+        self.assertEqual(self.ui.title, "PACKET CANCELED")
+
+    def test_packet_escape_does_not_cancel_an_active_pat_session(self):
+        started, release = threading.Event(), threading.Event()
+        events = []
+        class FakeTNC:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): events.append("stopped")
+        def session(*args):
+            started.set()
+            if not release.wait(3):
+                raise RuntimeError("test timed out")
+            return "Session done"
+        self.ui.tnc_factory = FakeTNC
+        self.backend.connect_packet = session
+        self.ui.packet_connect({"mac": "AA:BB:CC:DD:EE:FF", "gateway": "KT7RUN-10"})
+        self.assertTrue(started.wait(2))
+        self.assertEqual(self.ui._packet_control["phase"], "session")
+        self.ui.input("ESC")
+        self.assertFalse(self.ui._packet_control["cancel"].is_set())
+        self.assertEqual(self.ui.mode, "busy")
+        self.ui.quit()
+        self.assertEqual(self.ui.mode, "busy")
+        self.ui.draw()  # active session must remain renderable while blocked
+        release.set()
+        self.wait_task()
+        self.assertEqual(events, ["stopped"])
+        self.assertEqual(self.ui.title, "SESSION FINISHED")
 
     def test_edit_cursor_and_password_mask(self):
         self.ui.edit_draft("body")

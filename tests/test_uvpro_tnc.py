@@ -65,6 +65,71 @@ class UVProTests(unittest.TestCase):
             with self.assertRaisesRegex(tnc.TNCError, "2.1.0"):
                 tnc._check_tncd("/local/tncd")
 
+    def test_default_timeout_allows_bridge_spp_and_profile_setup(self):
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+        self.assertEqual(bridge.startup_timeout, 150)
+
+    def test_canceled_before_start_does_not_launch(self):
+        cancel = threading.Event()
+        cancel.set()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", cancel_event=cancel)
+        with mock.patch.object(tnc, "_check_tncd") as check, mock.patch.object(tnc.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "^Bluetooth connection canceled\\.$"):
+                bridge.start()
+            check.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_canceled_during_version_check_does_not_launch(self):
+        cancel = threading.Event()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", cancel_event=cancel)
+        with mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd", side_effect=lambda _: cancel.set()), \
+             mock.patch.object(tnc, "_ensure_port_free") as port_check, \
+             mock.patch.object(tnc.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "^Bluetooth connection canceled\\.$"):
+                bridge.start()
+            port_check.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_canceled_while_waiting_stops_child(self):
+        cancel = threading.Event()
+        process = FakeProc()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", cancel_event=cancel)
+        def not_online(_):
+            cancel.set()
+            return False
+        with mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc, "_owns_listener", return_value=True), \
+             mock.patch.object(bridge, "_online", side_effect=not_online), \
+             mock.patch.object(tnc.subprocess, "Popen", return_value=process) as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "^Bluetooth connection canceled\\.$"):
+                bridge.start()
+            self.assertTrue(process.terminated)
+            self.assertFalse(Path(spawn.call_args.args[0][2]).exists())
+            self.assertEqual(bridge.status()["state"], "stopped")
+
+    def test_canceled_as_link_becomes_ready_stops_child(self):
+        cancel = threading.Event()
+        process = FakeProc()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", cancel_event=cancel)
+        def online(_):
+            cancel.set()
+            return True
+        with mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc, "_owns_listener", return_value=True), \
+             mock.patch.object(bridge, "_online", side_effect=online), \
+             mock.patch.object(tnc.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(tnc.TNCError, "^Bluetooth connection canceled\\.$"):
+                bridge.start()
+            self.assertTrue(process.terminated)
+            self.assertEqual(bridge.status()["state"], "stopped")
+
     def test_start_owns_loopback_bridge_and_cleans_up(self):
         process = FakeProc()
         bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")

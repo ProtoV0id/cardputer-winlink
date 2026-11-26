@@ -131,8 +131,8 @@ def _owns_listener(pid, port):
 class UVProTNC:
     """Manage one explicitly requested, private tncd Bluetooth bridge."""
 
-    def __init__(self, mac, callsign, executable=None, port=8000, startup_timeout=20,
-                 api_port=None):
+    def __init__(self, mac, callsign, executable=None, port=8000, startup_timeout=150,
+                 api_port=None, cancel_event=None):
         self.mac = normalize_mac(mac)
         self.callsign = normalize_callsign(callsign)
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -144,6 +144,7 @@ class UVProTNC:
         self.api_port = api_port
         self.executable = executable or _find_tncd()
         self.startup_timeout = startup_timeout
+        self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._proc = None
         self._runtime = None
         self._listener_verified = False
@@ -221,6 +222,8 @@ class UVProTNC:
         thread. A connected transport does not prove radio TX or gateway reachability.
         """
         with self._lock:
+            if self.cancel_event.is_set():
+                raise TNCError("Bluetooth connection canceled.")
             if self._proc is not None and self._proc.poll() is None:
                 if self._listener_verified and _owns_listener(self._proc.pid, self.port) and self._online(self._proc):
                     return
@@ -229,6 +232,8 @@ class UVProTNC:
             if sys.platform != "linux":
                 raise TNCError("UV-PRO Bluetooth support requires Linux and BlueZ.")
             _check_tncd(self.executable)
+            if self.cancel_event.is_set():
+                raise TNCError("Bluetooth connection canceled.")
             _ensure_port_free(self.port)
             self.api_port = self._requested_api_port or _ephemeral_port(self.port)
             if self._requested_api_port is not None:
@@ -242,6 +247,8 @@ class UVProTNC:
                     stream.write(self._config_text())
                 log_fd = self._open_log()
                 try:
+                    if self.cancel_event.is_set():
+                        raise TNCError("Bluetooth connection canceled.")
                     self._proc = subprocess.Popen([self.executable, "-c", str(config)],
                                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                                   stderr=subprocess.STDOUT, close_fds=True)
@@ -253,16 +260,24 @@ class UVProTNC:
                 self._log_thread.start()
                 deadline = time.monotonic() + self.startup_timeout
                 while time.monotonic() < deadline:
+                    if self.cancel_event.is_set():
+                        raise TNCError("Bluetooth connection canceled.")
                     if self._proc.poll() is not None:
                         raise TNCError("tncd exited before starting. Check its version and Bluetooth setup.")
                     if _owns_listener(self._proc.pid, self.port) and self._online(self._proc):
+                        if self.cancel_event.is_set():
+                            raise TNCError("Bluetooth connection canceled.")
                         self._listener_verified = True
                         return
-                    time.sleep(0.1)
+                    self.cancel_event.wait(0.1)
+                if self.cancel_event.is_set():
+                    raise TNCError("Bluetooth connection canceled.")
                 raise TNCError("Radio Bluetooth link did not become ready; check pairing and the radio's KISS setting.")
             except TNCError as exc:
                 log_path = self.log_path
                 self.stop()
+                if str(exc) == "Bluetooth connection canceled.":
+                    raise
                 if log_path:
                     raise TNCError(str(exc) + " Log: " + log_path) from exc
                 raise
@@ -275,7 +290,7 @@ class UVProTNC:
     def status(self):
         """Return bridge process state, never a guessed Bluetooth/RF status."""
         # Reading these individual values is safe without blocking the UI on
-        # start(), which may wait for up to ten seconds. Recheck ownership; a
+        # start(), which may wait for the configured startup timeout. Recheck ownership; a
         # concurrent stop can only turn a positive check into a stale snapshot.
         proc, starting, verified = self._proc, self._starting, self._listener_verified
         if starting:
