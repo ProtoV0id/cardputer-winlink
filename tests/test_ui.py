@@ -54,6 +54,17 @@ class UITest(unittest.TestCase):
         self.wait_task()
         self.assertIn("Hello", self.ui.text)
 
+    def test_signal_blue_colors_are_used_in_menu_and_message(self):
+        home = self.ui.draw()
+        self.assertEqual(home.getpixel((0, 45)), (10, 25, 37))  # navy background
+        self.assertEqual(home.getpixel((20, 15)), (16, 42, 59))  # blue header
+        self.assertEqual(home.getpixel((300, 45)), (22, 64, 81))  # selected row
+        self.assertEqual(home.getpixel((270, 7)), (27, 67, 82))  # Telnet badge
+        self.ui.view("MESSAGE", "Example message")
+        message = self.ui.draw()
+        self.assertEqual(message.getpixel((0, 45)), (10, 25, 37))
+        self.assertEqual(message.getpixel((210, 15)), (16, 42, 59))
+
     def test_menu_scroll_retains_access_to_all_actions(self):
         for _ in range(7):
             self.ui.input("DOWN")

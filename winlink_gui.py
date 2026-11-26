@@ -11,11 +11,11 @@ from PIL import Image, ImageDraw, ImageFont
 from backend import PatBackend
 from device import W, H, default_keyboard, run_device
 
-# Muted charcoal and high-contrast green evoke a modern field radio. These
-# colors are decorative; none are used as an unverified connection indicator.
-BG, PANEL, CARD = "#0d1518", "#172328", "#263c38"
-TEXT, MUTED, ACCENT, GOLD = "#f0f5e9", "#aebfba", "#b7e77e", "#edc681"
-EDGE, DIVIDER = "#3d5c50", "#24363a"
+# Signal Blue: dark navy, light text and cyan accents, matching the selected
+# preview. Colors are decorative and do not imply a connection is active.
+BG, PANEL, CARD = "#0a1925", "#102a3b", "#164051"
+TEXT, MUTED, ACCENT = "#eef8fc", "#a5c4d1", "#7be4ee"
+EDGE, DIVIDER, BADGE = "#315264", "#315264", "#1b4352"
 
 
 def font(size, bold=False):
@@ -356,7 +356,7 @@ class UI:
         d.text((11, 5), fit(self.title, 235, TITLE), font=TITLE, fill=TEXT)
         if self.mode == "menu":
             if self.title == "POCKETLINK":
-                d.rounded_rectangle((259, 6, 311, 21), radius=3, fill="#2c4039", outline=EDGE)
+                d.rounded_rectangle((259, 6, 311, 21), radius=3, fill=BADGE, outline=EDGE)
                 d.text((265, 8), "TELNET", font=SMALL, fill=ACCENT)
             else:
                 counter = f"{self.sel+1}/{len(self.items)}"
@@ -414,7 +414,6 @@ class UI:
                 hint = "F/X SCROLL    ENTER / ESC BACK"
         d.rectangle((0, 150, W, H), fill=PANEL)
         d.line((0, 150, W, 150), fill=EDGE)
-        d.rectangle((0, 151, 3, 169), fill=GOLD)
         d.text((10, 153), fit(hint, 300, SMALL), font=SMALL, fill=TEXT)
         return image
 
