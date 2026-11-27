@@ -9,9 +9,12 @@ import re
 import sys
 import tempfile
 import threading
+import time
 
 from PIL import Image, ImageDraw, ImageFont
+from appearance import AppearanceSettings
 from backend import PatBackend
+from dashboard import draw_dashboard
 from device import W, H, default_keyboard, run_device
 
 # Signal Blue: dark navy, light text and cyan accents, matching the selected
@@ -175,11 +178,20 @@ class RadioSettings:
 
 
 class UI:
-    def __init__(self, backend=None, radio_config_path=None, tnc_factory=None):
+    def __init__(self, backend=None, radio_config_path=None, tnc_factory=None, appearance_config_path=None):
         self.backend = backend or PatBackend()
         self.radio = RadioSettings(radio_config_path)
+        self.appearance = AppearanceSettings(appearance_config_path)
+        try:
+            self.layout = self.appearance.load()
+        except RuntimeError:
+            # A damaged appearance file must not prevent access to messages.
+            # A later attempt to change it will display the actual error.
+            self.layout = "classic"
         self.tnc_factory = tnc_factory
         self._packet_control = None
+        self._session_progress = None
+        self._session_started = None
         self.results = queue.Queue()
         self.draft = {"to": "", "subject": "", "body": ""}
         self.settings = {}
@@ -226,10 +238,12 @@ class UI:
         self.done, self.back = done, back
         self.multiline, self.secret = multiline, secret
 
-    def task(self, title, work, done, back=None):
+    def task(self, title, work, done, back=None, session=None):
         self.mode, self.title = "busy", title
         self.text = "Please wait..."
         self.back = back or self.home
+        self._session_progress = session
+        self._session_started = time.monotonic() if session else None
         def run():
             try:
                 self.results.put((True, work(), done, self.back))
@@ -243,6 +257,8 @@ class UI:
         except queue.Empty:
             return
         self._packet_control = None
+        self._session_progress = None
+        self._session_started = None
         if ok:
             try:
                 done(value)
@@ -330,7 +346,8 @@ class UI:
 
     def connect(self):
         self.task("TELNET SESSION", self.backend.connect_telnet,
-                  lambda output: self.view("SESSION FINISHED", output or "Session completed."))
+                  lambda output: self.view("SESSION FINISHED", output or "Session completed."),
+                  session="telnet")
 
     def packet_settings(self):
         try:
@@ -425,7 +442,7 @@ class UI:
                 self.view("PACKET CANCELED", "Bluetooth setup canceled. The packet session was not started.")
             else:
                 self.view("SESSION FINISHED", output or "Packet session completed.")
-        self.task("PACKET SESSION", work, complete, self.home)
+        self.task("PACKET SESSION", work, complete, self.home, session="packet")
 
     def load_settings(self):
         def loaded(settings):
@@ -438,8 +455,27 @@ class UI:
             ("Callsign: " + (self.settings.get("callsign") or "(not set)"), lambda: self.edit_setting("callsign")),
             ("Grid: " + (self.settings.get("locator") or "(optional)"), lambda: self.edit_setting("locator")),
             ("Password: " + ("set" if self.settings.get("has_password") else "not set"), lambda: self.edit_setting("password")),
+            ("Layout: " + ("Dashboard" if self.layout == "dashboard" else "Classic"), self.layout_menu),
             ("Back", self.home),
         ], self.home)
+
+    def layout_menu(self):
+        self.menu("CHOOSE LAYOUT", [
+            ("Classic list" + (" (current)" if self.layout == "classic" else ""),
+             lambda: self.set_layout("classic")),
+            ("Tile dashboard" + (" (current)" if self.layout == "dashboard" else ""),
+             lambda: self.set_layout("dashboard")),
+            ("Back", self.settings_menu),
+        ], self.settings_menu)
+
+    def set_layout(self, value):
+        try:
+            self.appearance.save(value)
+        except (RuntimeError, ValueError) as exc:
+            self.view("LAYOUT ERROR", str(exc), self.layout_menu)
+            return
+        self.layout = value
+        self.home()
 
     def edit_setting(self, field):
         def save(value):
@@ -523,31 +559,38 @@ class UI:
         d.line((0, 27, W, 27), fill=EDGE)
         d.text((11, 5), fit(self.title, 235, TITLE), font=TITLE, fill=TEXT)
         if self.mode == "menu":
-            if self.title == "POCKETLINK":
+            dashboard_home = self.title == "POCKETLINK" and self.layout == "dashboard"
+            if self.title == "POCKETLINK" and not dashboard_home:
                 d.rounded_rectangle((259, 6, 311, 21), radius=3, fill=BADGE, outline=EDGE)
                 d.text((263, 8), "WINLINK", font=SMALL, fill=ACCENT)
             else:
-                counter = f"{self.sel+1}/{len(self.items)}"
+                counter = (f"{self.sel // 4 + 1}/{(len(self.items) + 3) // 4}" if dashboard_home
+                           else f"{self.sel+1}/{len(self.items)}")
                 d.text((310-SMALL.getlength(counter), 8), counter, font=SMALL, fill=ACCENT)
-            self.top = min(self.top, self.sel)
-            if self.sel >= self.top + 4:
-                self.top = self.sel - 3
-            if len(self.items) > 4:
-                d.line((317, 33, 317, 143), fill=DIVIDER, width=2)
-                thumb_h = max(8, int(110 * 4 / len(self.items)))
-                thumb_y = 33 + int((110 - thumb_h) * self.top / (len(self.items) - 4))
-                d.line((317, thumb_y, 317, thumb_y + thumb_h), fill=ACCENT, width=2)
-            for row, (label, _) in enumerate(self.items[self.top:self.top+4]):
-                y = 32 + row * 28
-                selected = row + self.top == self.sel
-                if selected:
-                    d.rounded_rectangle((6, y-1, 313, y+24), radius=4, fill=CARD, outline=EDGE)
-                    d.rectangle((7, y+3, 9, y+20), fill=ACCENT)
-                else:
-                    d.line((15, y+24, 307, y+24), fill=DIVIDER)
-                number = f"{row + self.top + 1:02d}"
-                d.text((16, y+6), number, font=SMALL, fill=ACCENT if selected else MUTED)
-                d.text((43, y+2), fit(label, 256), font=BODY, fill=TEXT if selected else MUTED)
+            if dashboard_home:
+                draw_dashboard(d, self.items, self.sel, BODY, SMALL, fit,
+                               {"selected": CARD, "panel": PANEL, "accent": ACCENT,
+                                "edge": EDGE, "text": TEXT, "muted": MUTED})
+            else:
+                self.top = min(self.top, self.sel)
+                if self.sel >= self.top + 4:
+                    self.top = self.sel - 3
+                if len(self.items) > 4:
+                    d.line((317, 33, 317, 143), fill=DIVIDER, width=2)
+                    thumb_h = max(8, int(110 * 4 / len(self.items)))
+                    thumb_y = 33 + int((110 - thumb_h) * self.top / (len(self.items) - 4))
+                    d.line((317, thumb_y, 317, thumb_y + thumb_h), fill=ACCENT, width=2)
+                for row, (label, _) in enumerate(self.items[self.top:self.top+4]):
+                    y = 32 + row * 28
+                    selected = row + self.top == self.sel
+                    if selected:
+                        d.rounded_rectangle((6, y-1, 313, y+24), radius=4, fill=CARD, outline=EDGE)
+                        d.rectangle((7, y+3, 9, y+20), fill=ACCENT)
+                    else:
+                        d.line((15, y+24, 307, y+24), fill=DIVIDER)
+                    number = f"{row + self.top + 1:02d}"
+                    d.text((16, y+6), number, font=SMALL, fill=ACCENT if selected else MUTED)
+                    d.text((43, y+2), fit(label, 256), font=BODY, fill=TEXT if selected else MUTED)
             hint = "F/X OR ARROWS MOVE     ENTER OPEN"
         elif self.mode == "edit":
             before = self.text[:self.cursor]
@@ -561,27 +604,43 @@ class UI:
             hint = "SHIFT+ENTER SAVE   ESC BACK" if self.multiline else "ENTER SAVE   ESC BACK"
         else:
             busy_hint = "PLEASE WAIT"
-            if self.mode == "busy" and self._packet_control is not None:
+            session_busy = self.mode == "busy" and self._session_progress is not None
+            if session_busy and self._session_progress == "packet" and self._packet_control is not None:
                 with self._packet_control["lock"]:
                     phase = self._packet_control["phase"]
                 if phase == "starting":
-                    busy_text = "Connecting to radio...\nThis may take about 3 minutes.\n\nEsc cancels Bluetooth setup."
+                    busy_text = "Connecting to radio...\nThis may take about 3 minutes.\nEsc cancels Bluetooth setup."
                     busy_hint = "ESC CANCEL SETUP"
                 elif phase == "canceling":
                     busy_text = "Canceling Bluetooth setup...\nPlease wait for cleanup."
                 else:
-                    busy_text = "Packet session in progress.\nPlease wait for its result.\n\nEsc cannot cancel this session."
+                    busy_text = "Packet session in progress.\nWaiting for Pat's result.\nEsc cannot cancel this session."
+            elif session_busy and self._session_progress == "telnet":
+                busy_text = "Telnet session in progress.\nWaiting for Pat's result."
             else:
                 busy_text = self.text
             wrapped = self.view_lines if self.mode == "view" else wrap(busy_text, width=VIEW_WIDTH, prefer_words=True)
             start = self.top if self.mode == "view" else 0
             # Clip glyph ink at the right and bottom edges, including the
             # unusual case of a single glyph wider than the available width.
-            area = Image.new("RGB", (VIEW_WIDTH, 110), BG)
+            area = Image.new("RGB", (VIEW_WIDTH, 90 if session_busy else 110), BG)
             area_draw = ImageDraw.Draw(area)
             for row, line in enumerate(wrapped[start:start+ROWS]):
                 area_draw.text((0, row*22), line, font=BODY, fill=TEXT)
             image.paste(area, (VIEW_LEFT, 32))
+            if session_busy:
+                # Pat does not provide a reliable overall session percentage.
+                # A moving segment means activity, not estimated completion.
+                left, right, y = VIEW_LEFT, W - 12, 132
+                d.rounded_rectangle((left, y, right, y + 8), radius=3, fill=PANEL, outline=EDGE)
+                travel, segment = right - left - 4, 52
+                max_offset = travel - segment
+                elapsed = max(0.0, time.monotonic() - self._session_started)
+                offset = int(elapsed * 85) % (2 * max_offset)
+                if offset > max_offset:
+                    offset = 2 * max_offset - offset
+                start_x = left + 2 + offset
+                d.rounded_rectangle((start_x, y + 2, start_x + segment, y + 6), radius=2, fill=ACCENT)
             if self.mode == "view" and len(wrapped) > ROWS:
                 d.line((316, 33, 316, 141), fill=DIVIDER, width=2)
                 thumb_h = max(8, int(108 * ROWS / len(wrapped)))

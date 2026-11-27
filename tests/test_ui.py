@@ -44,7 +44,8 @@ class UITest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.backend = FakePat()
-        self.ui = UI(self.backend, radio_config_path=Path(self.temp.name) / "radio.json")
+        self.ui = UI(self.backend, radio_config_path=Path(self.temp.name) / "radio.json",
+                     appearance_config_path=Path(self.temp.name) / "appearance.json")
 
     def wait_task(self):
         for _ in range(100):
@@ -63,6 +64,48 @@ class UITest(unittest.TestCase):
         self.ui.input("ENTER")
         self.wait_task()
         self.assertIn("Hello", self.ui.text)
+
+    def test_layout_choice_persists_and_keeps_all_actions(self):
+        actions = [label for label, _ in self.ui.items]
+        self.ui.settings = self.backend.get_settings()
+        self.ui.settings_menu()
+        next(action for label, action in self.ui.items if label.startswith("Layout:"))()
+        self.assertEqual(self.ui.title, "CHOOSE LAYOUT")
+        self.ui.input("DOWN")
+        self.ui.input("ENTER")
+        self.assertEqual(self.ui.layout, "dashboard")
+        self.assertEqual([label for label, _ in self.ui.items], actions)
+        self.assertEqual(self.ui.draw().size, (320, 170))
+        for expected in range(1, len(actions)):
+            self.ui.input("DOWN")
+            self.ui.draw()
+            self.assertEqual(self.ui.sel, expected)
+        self.ui.input("DOWN")
+        self.assertEqual(self.ui.sel, 0)
+        self.ui.input("ENTER")
+        self.wait_task()
+        self.assertEqual(self.ui.title, "INBOX")
+        self.ui.input("ESC")
+        self.assertEqual(self.ui.layout, "dashboard")
+        self.assertEqual(self.ui.title, "POCKETLINK")
+        restored = UI(self.backend, radio_config_path=Path(self.temp.name) / "radio.json",
+                      appearance_config_path=Path(self.temp.name) / "appearance.json")
+        self.assertEqual(restored.layout, "dashboard")
+        restored.settings = self.backend.get_settings()
+        restored.layout_menu()
+        restored.input("ENTER")
+        self.assertEqual(restored.layout, "classic")
+        self.assertEqual(restored.appearance.load(), "classic")
+
+    def test_invalid_layout_settings_do_not_block_mail_and_are_not_overwritten(self):
+        path = Path(self.temp.name) / "bad-appearance.json"
+        path.write_text("not json", encoding="utf-8")
+        ui = UI(self.backend, radio_config_path=Path(self.temp.name) / "radio.json",
+                appearance_config_path=path)
+        self.assertEqual(ui.layout, "classic")
+        ui.set_layout("dashboard")
+        self.assertEqual(ui.title, "LAYOUT ERROR")
+        self.assertEqual(path.read_text(encoding="utf-8"), "not json")
 
     def test_signal_blue_colors_are_used_in_menu_and_message(self):
         home = self.ui.draw()

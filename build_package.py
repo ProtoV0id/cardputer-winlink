@@ -9,10 +9,10 @@ import zlib
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = "cardputer-winlink"
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 PREFIX = "/usr/share/APPLaunch"
 OUTPUT_NAME = f"{PACKAGE}_{VERSION}_all.deb"
-SOURCES = ("winlink_gui.py", "backend.py", "device.py", "uvpro_tnc.py")
+SOURCES = ("winlink_gui.py", "backend.py", "device.py", "uvpro_tnc.py", "appearance.py", "dashboard.py")
 
 
 def icon_png():

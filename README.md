@@ -20,7 +20,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.3.4_all.deb
+sudo apt install ./dist/cardputer-winlink_0.3.5_all.deb
 ```
 
 The final command installs the app, Pat, Pillow, and evdev using the device's configured Debian repositories. The package requires Pat 0.16.0 or newer; if apt cannot satisfy a dependency, stop and check your Cardputer's OS and package sources. If `~/cardputer-winlink` already exists, Git refuses to overwrite it; inspect the existing folder before choosing a different destination.
@@ -37,6 +37,8 @@ Then use the Cardputer's own screen to find **PocketLink** in the application wh
 
 For a UV-PRO Bluetooth packet session, complete the separate [UV-PRO setup](UVPRO-SETUP.md), including installing `tncd`, pairing, and manually checking the radio's KISS frequencies. Packet settings include an optional digipeater; leave it empty for a direct gateway connection. PocketLink starts Bluetooth discovery during a packet session and ends its own scan afterward. Neither the bridge nor an RF session starts automatically; Telnet does not require the bridge.
 
+Telnet and packet sessions show an animated activity bar. The bar does not estimate a percentage or prove delivery; packet sessions separately identify radio setup and the Pat session. The current classic home menu and a compact tile dashboard can be selected under **Settings → Layout**; the choice is remembered without changing Pat or radio settings. Message reading and other screens keep their existing layout.
+
 An opt-in [experimental UV-PRO bridge](UVPRO-SETUP.md#experimental-bridge-for-an-already-connected-radio) is available for testing a Bluetooth connection problem. It preserves the official bridge and does not establish that RF transmission works.
 
 ## Update an existing installation
@@ -48,7 +50,7 @@ cd ~/cardputer-winlink
 git pull --ff-only
 build_dir=$(mktemp -d)
 python3 build_package.py --output-dir "$build_dir"
-sudo apt install "$build_dir/cardputer-winlink_0.3.4_all.deb"
+sudo apt install "$build_dir/cardputer-winlink_0.3.5_all.deb"
 ```
 
 The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. The Debian package and existing installation paths remain named `cardputer-winlink`, so this upgrades the previous version instead of installing a second app. The wheel entry is renamed PocketLink. The upgrade leaves Pat's configuration and mail in their existing locations.
@@ -76,7 +78,7 @@ The built-in keypad translation follows M5Stack's v5 Zero driver and keymap. Ver
 
 - Pat stores its configuration in `~/.config/pat/config.json` by default and its mailbox in its usual data directory. This front end preserves other existing Pat settings and mail. Configuration and mailbox paths can depend on the user's XDG environment.
 - The Winlink password is stored in Pat's configuration, and messages are stored on the device; they are not encrypted at rest by this app. A loopback-only Pat process uses a temporary private configuration copy while the app runs and is shut down on normal exit. Avoid running multiple front ends that modify Pat configuration at the same time.
-- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. The optional UV-PRO packet path uses separately installed `tncd` 2.1.0; see [UVPRO-SETUP.md](UVPRO-SETUP.md). Physical Bluetooth tests have not yet established a reliable radio session; the experimental bridge has not been tested on the hardware.
+- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. The optional UV-PRO packet path uses separately installed `tncd` 2.1.0; see [UVPRO-SETUP.md](UVPRO-SETUP.md). A previous version completed packet sessions on a Cardputer Zero and UV-PRO with both the official and experimental bridges. The new layout and activity bar still require on-device verification.
 - This is an early build. A local preview or mocked test is not proof of the on-device keyboard, display, application wheel, Pat version compatibility, or an actual Winlink session.
 
 ## Local development

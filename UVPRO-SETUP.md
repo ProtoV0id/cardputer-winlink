@@ -2,7 +2,7 @@
 
 This experimental path uses the UV-PRO's built-in Bluetooth KISS TNC. Pat needs a connected-mode AX.25 engine as well as the TNC: PocketLink uses the separately installed [tncd](https://github.com/ben-kuhn/tncd) 2.1.0 bridge to provide that engine over local AGWPE. PocketLink starts it only for an explicitly confirmed packet session and stops its own bridge afterward. It does not program the radio or automatically select a frequency.
 
-**Status:** physical Cardputer Zero and UV-PRO attempts have not yet established a reliable Bluetooth session. The experimental bridge below has not been tested on that hardware. A running local bridge alone does not prove Bluetooth connection, RF transmission, or delivery.
+**Status:** a Cardputer Zero and UV-PRO completed packet sessions using automatic discovery with both the official and experimental bridges. The updated layout and activity bar have not yet been verified on the device. A running local bridge alone does not prove Bluetooth connection, RF transmission, or delivery.
 
 ## 1. Prerequisites
 
@@ -84,7 +84,7 @@ PocketLink keeps private per-session bridge diagnostics under `~/.local/state/ca
 
 PocketLink 0.3.3 and later can opt into a separately built, experimental tncd that tries the Bluetooth Serial Port Profile without first disconnecting the entire radio. Some UV-PRO/BlueZ configurations reconnect an audio profile while that whole-device disconnect is in progress. Upstream added the disconnect to clear stale serial links; bypassing it could leave a link that appears online but does not transmit. Earlier failures without a pre-disconnect are not explained by this change. It retains upstream's later audio-profile cleanup. The app still requires the bridge's Bluetooth port to report online before starting Pat, but that does not prove RF transmission.
 
-Starting with PocketLink 0.3.4, UV-PRO packet sessions start a temporary Bluetooth discovery scan automatically and stop the app's own scan when the session ends or Bluetooth setup is canceled. One physical test successfully completed a Winlink session with discovery active; automatic scanning itself still needs on-device verification. The scan doesn't change pairing and doesn't by itself transmit a packet.
+Starting with PocketLink 0.3.4, UV-PRO packet sessions start a temporary Bluetooth discovery scan automatically and stop the app's own scan when the session ends or Bluetooth setup is canceled. The automatic scan was used in a successful physical packet session. The scan doesn't change pairing and doesn't by itself transmit a packet.
 
 The experimental bridge, complete corresponding GPL source, and reproducible build instructions are in [experimental/tncd-uvpro](experimental/tncd-uvpro/README.md). The official `~/.local/bin/tncd` is not changed. To opt in after upgrading PocketLink, on a Linux **aarch64** Cardputer, with the app closed, run the following from this repository:
 
