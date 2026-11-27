@@ -192,6 +192,11 @@ class UI:
         self._packet_control = None
         self._session_progress = None
         self._session_started = None
+        # Radio-style home navigation remembers the selected action in each
+        # column while the operator switches sides or visits a submenu.
+        self._radio_focus = 0
+        self._radio_selected = [0, 4]
+        self._radio_right_top = 0
         self.results = queue.Queue()
         self.draft = {"to": "", "subject": "", "body": ""}
         self.settings = {}
@@ -215,6 +220,8 @@ class UI:
             ("About / help", self.help),
             ("Exit", self.quit),
         ], self.quit)
+        if self.layout == "radio":
+            self.sel = self._radio_selected[self._radio_focus]
 
     def quit(self):
         # Do not release the framebuffer or stop Pat while a worker is active.
@@ -496,6 +503,8 @@ class UI:
 
     def help(self):
         self.view("HELP", "F/X or arrows move. Enter selects. Esc goes back.\n\n"
+                  "On the radio-style home screen, F/X moves within a column; "
+                  "Z/C or left/right switches columns.\n\n"
                   "In message body: Enter adds a line; Shift+Enter saves. "
                   "Left/right moves the cursor.\n\n"
                   "Queue a message, then use Telnet or packet to send and receive. "
@@ -514,11 +523,28 @@ class UI:
         if self.mode == "quit":
             return
         if self.mode == "menu":
-            if key in ("UP", "LEFT"):
+            radio_home = self.title == "POCKETLINK" and self.layout == "radio"
+            if radio_home and key in ("UP", "DOWN", "LEFT", "RIGHT"):
+                column = 0 if self.sel < 4 else 1
+                self._radio_selected[column] = self.sel
+                if key in ("LEFT", "RIGHT"):
+                    target = 0 if key == "LEFT" else 1
+                    self._radio_focus = target
+                    self.sel = self._radio_selected[target]
+                else:
+                    first, end = (0, 4) if column == 0 else (4, len(self.items))
+                    step = -1 if key == "UP" else 1
+                    self.sel = first + (self.sel - first + step) % (end - first)
+                    self._radio_selected[column] = self.sel
+                    self._radio_focus = column
+            elif key in ("UP", "LEFT"):
                 self.sel = (self.sel - 1) % len(self.items)
             elif key in ("DOWN", "RIGHT"):
                 self.sel = (self.sel + 1) % len(self.items)
             elif key == "ENTER":
+                if radio_home:
+                    self._radio_focus = 0 if self.sel < 4 else 1
+                    self._radio_selected[self._radio_focus] = self.sel
                 self.items[self.sel][1]()
             elif key == "ESC":
                 self.back()
@@ -568,17 +594,30 @@ class UI:
                 d.rounded_rectangle((259, 6, 311, 21), radius=3, fill=BADGE, outline=EDGE)
                 d.text((263, 8), "WINLINK", font=SMALL, fill=ACCENT)
             else:
-                counter = (f"{self.sel // 4 + 1}/{(len(self.items) + 3) // 4}" if dashboard_home
-                           else f"{self.sel+1}/{len(self.items)}")
+                if dashboard_home:
+                    counter = f"{self.sel // 4 + 1}/{(len(self.items) + 3) // 4}"
+                elif radio_home:
+                    counter = (f"L {self.sel + 1}/4" if self.sel < 4
+                               else f"R {self.sel - 3}/{len(self.items) - 4}")
+                else:
+                    counter = f"{self.sel+1}/{len(self.items)}"
                 d.text((310-SMALL.getlength(counter), 8), counter, font=SMALL, fill=ACCENT)
             if dashboard_home:
                 draw_dashboard(d, self.items, self.sel, BODY, SMALL, fit,
                                {"selected": CARD, "panel": PANEL, "accent": ACCENT,
                                 "edge": EDGE, "text": TEXT, "muted": MUTED})
             elif radio_home:
+                right_count = max(0, len(self.items) - 4)
+                right_index = (self.sel if self.sel >= 4 else self._radio_selected[1]) - 4
+                self._radio_right_top = max(0, min(self._radio_right_top, max(0, right_count - 4)))
+                if right_index < self._radio_right_top:
+                    self._radio_right_top = right_index
+                elif right_index >= self._radio_right_top + 4:
+                    self._radio_right_top = right_index - 3
                 draw_radio_home(d, self.items, self.sel, BODY, SMALL, fit,
                                 {"selected": CARD, "panel": PANEL, "accent": ACCENT,
-                                 "edge": EDGE, "text": TEXT, "muted": MUTED})
+                                 "edge": EDGE, "text": TEXT, "muted": MUTED},
+                                right_top=self._radio_right_top)
             else:
                 self.top = min(self.top, self.sel)
                 if self.sel >= self.top + 4:
@@ -599,7 +638,8 @@ class UI:
                     number = f"{row + self.top + 1:02d}"
                     d.text((16, y+6), number, font=SMALL, fill=ACCENT if selected else MUTED)
                     d.text((43, y+2), fit(label, 256), font=BODY, fill=TEXT if selected else MUTED)
-            hint = "F/X OR ARROWS MOVE     ENTER OPEN"
+            hint = ("F/X MOVE  Z/C COLUMN  ENTER OPEN" if radio_home
+                    else "F/X OR ARROWS MOVE     ENTER OPEN")
         elif self.mode == "edit":
             before = self.text[:self.cursor]
             after = self.text[self.cursor:]

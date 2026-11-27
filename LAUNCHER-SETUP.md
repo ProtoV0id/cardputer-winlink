@@ -18,7 +18,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.3.6_all.deb
+sudo apt install ./dist/cardputer-winlink_0.3.7_all.deb
 ```
 
 The clone is public and uses HTTPS, so it does not need a GitHub account or key.
@@ -30,7 +30,7 @@ the repository run:
 ```sh
 build_dir=$(mktemp -d)
 python3 build_package.py --output-dir "$build_dir"
-sudo apt install "$build_dir/cardputer-winlink_0.3.6_all.deb"
+sudo apt install "$build_dir/cardputer-winlink_0.3.7_all.deb"
 ```
 
 The `.deb` requests Debian's `pat` package version 0.16.0 or newer; an older OS
@@ -56,7 +56,7 @@ python3 build_package.py
 ```
 
 The builder uses only the Python standard library and writes
-`dist/cardputer-winlink_0.3.6_all.deb`. It does not install software or access
+`dist/cardputer-winlink_0.3.7_all.deb`. It does not install software or access
 the network. It refuses to overwrite an existing package; move or rename the
 old package before rebuilding. The package may be built on Windows or Linux.
 
@@ -66,11 +66,11 @@ Copy the built `.deb` to the Cardputer Zero. On the device, from the directory
 containing the file:
 
 ```sh
-sudo apt install ./cardputer-winlink_0.3.6_all.deb
+sudo apt install ./cardputer-winlink_0.3.7_all.deb
 ```
 
 Use the actual path if you copied it elsewhere, for example
-`./dist/cardputer-winlink_0.3.6_all.deb`. This explicitly installs the app and
+`./dist/cardputer-winlink_0.3.7_all.deb`. This explicitly installs the app and
 its Debian dependencies: Python 3, Pillow, evdev, and Pat (version 0.16.0 or
 newer). It may access configured package repositories. On Debian, Pat's
 executable is normally `pat-winlink`; upstream packages commonly use `pat`.

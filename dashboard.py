@@ -33,22 +33,17 @@ def draw_dashboard(draw, items, selected, body, small, fit, colors):
         draw.text((x + 11, y + 29), fit(subtitle, 125, small), font=small, fill=colors["muted"])
 
 
-def draw_radio_home(draw, items, selected, body, small, fit, colors):
-    """Split the original actions into mail, session, and system panels.
+def draw_radio_home(draw, items, selected, body, small, fit, colors, right_top=0):
+    """Draw stable mail and control columns from the original home actions.
 
-    All callbacks and their ordering belong to the original home menu. The
-    left panel changes to system actions after the session actions, while the
-    right panel continues to show the session controls. Neutral squares on
-    the session buttons are decorative and never report connection state.
+    The control column scrolls through the session and system actions. Its
+    squares show selection only; they do not imply a radio connection state.
     """
     panel, edge = colors["panel"], colors["edge"]
     draw.rounded_rectangle((6, 32, 171, 143), radius=5, fill=panel, outline=edge)
     draw.rounded_rectangle((177, 32, 313, 143), radius=5, fill=panel, outline=edge)
-    system_page = selected >= 7
-    left_indexes = range(7, min(10, len(items))) if system_page else range(min(4, len(items)))
-    draw.text((14, 38), "SYSTEM" if system_page else "MAIL", font=small, fill=colors["muted"])
-    cue = "MAIL / SESSION" if system_page else "MORE: F/X"
-    draw.text((163 - small.getlength(cue), 38), cue, font=small, fill=colors["muted"])
+    left_indexes = range(min(4, len(items)))
+    draw.text((14, 38), "MAIL", font=small, fill=colors["muted"])
     draw.line((14, 50, 163, 50), fill=edge)
     for row, index in enumerate(left_indexes):
         y = 53 + row * 20
@@ -64,20 +59,26 @@ def draw_radio_home(draw, items, selected, body, small, fit, colors):
         draw.text((21, y - 1), fit(title, 140, body), font=body,
                   fill=colors["text"] if active else colors["muted"])
 
-    draw.text((185, 38), "SESSION CONTROL", font=small, fill=colors["muted"])
+    right_count = max(0, len(items) - 4)
+    right_top = max(0, min(right_top, max(0, right_count - 4)))
+    draw.text((185, 38), "CONTROL", font=small, fill=colors["muted"])
+    if right_count:
+        cue = f"{right_top + 1}-{min(right_top + 4, right_count)}/{right_count}"
+        draw.text((304 - small.getlength(cue), 38), cue, font=small, fill=colors["muted"])
     draw.line((185, 50, 304, 50), fill=edge)
-    for row, index in enumerate(range(4, min(7, len(items)))):
-        y = 55 + row * 27
+    if right_count > 4:
+        draw.line((309, 53, 309, 138), fill=edge, width=2)
+        thumb_h = max(8, int(85 * 4 / right_count))
+        thumb_y = 53 + int((85 - thumb_h) * right_top / (right_count - 4))
+        draw.line((309, thumb_y, 309, thumb_y + thumb_h), fill=colors["accent"], width=2)
+    for row, index in enumerate(range(4 + right_top, min(8 + right_top, len(items)))):
+        y = 53 + row * 22
         label = items[index][0]
         title = TILES.get(label, (label, ""))[0]
         active = index == selected
-        draw.rounded_rectangle((184, y, 306, y + 23), radius=3,
+        draw.rounded_rectangle((184, y, 304, y + 19), radius=3,
                                fill=colors["selected"] if active else panel,
                                outline=colors["accent"] if active else edge)
-        draw.rectangle((190, y + 5, 195, y + 18), fill=colors["accent"] if active else edge)
-        descriptor = {"Connect via Telnet": "Internet", "Connect via packet": "Radio"}.get(label, "")
-        draw.text((200, y + 1), fit(title, 58 if descriptor else 100, body), font=body,
+        draw.rectangle((189, y + 4, 193, y + 15), fill=colors["accent"] if active else edge)
+        draw.text((198, y), fit(title, 100, body), font=body,
                   fill=colors["text"] if active else colors["muted"])
-        if descriptor:
-            draw.text((302 - small.getlength(descriptor), y + 6), descriptor,
-                      font=small, fill=colors["muted"])

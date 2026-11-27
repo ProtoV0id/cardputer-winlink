@@ -64,7 +64,11 @@ class RadioLayoutTests(unittest.TestCase):
                 self.assertIn((expected, TEXT), visible)
                 self.ui.input("ENTER")
                 self.assertEqual(selected[-1], index)
-                self.ui.input("DOWN")
+                self.ui.input("RIGHT" if index == 3 else "DOWN")
+        self.assertEqual(self.ui.sel, 4)  # right column wraps within its group
+        self.ui.input("LEFT")
+        self.assertEqual(self.ui.sel, 3)  # each column retains its selection
+        self.ui.input("DOWN")
         self.assertEqual(self.ui.sel, 0)
 
 
