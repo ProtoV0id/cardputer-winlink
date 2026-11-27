@@ -83,7 +83,7 @@ class UVProTests(unittest.TestCase):
         cancel = threading.Event()
         bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", cancel_event=cancel)
         with mock.patch.object(tnc.sys, "platform", "linux"), \
-             mock.patch.object(tnc, "_check_tncd", side_effect=lambda _: cancel.set()), \
+             mock.patch.object(tnc, "_check_tncd", side_effect=lambda *_: cancel.set()), \
              mock.patch.object(tnc, "_ensure_port_free") as port_check, \
              mock.patch.object(tnc.subprocess, "Popen") as spawn:
             with self.assertRaisesRegex(tnc.TNCError, "^Bluetooth connection canceled\\.$"):
@@ -201,6 +201,87 @@ class UVProTests(unittest.TestCase):
             factory.assert_not_called()
         process.terminate()
         process.stdout.close()
+
+    def test_experimental_bridge_requires_exact_marker_and_existing_binary(self):
+        home = Path(self.temp.name)
+        marker = home / ".config" / "cardputer-pat" / "experimental-tncd"
+        binary = home / ".local" / "bin" / "pocketlink-tncd-experimental"
+        with mock.patch.object(tnc.Path, "home", return_value=home), \
+             mock.patch.object(tnc.shutil, "which", return_value="/system/tncd"):
+            bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+            self.assertEqual(bridge.executable, "/system/tncd")
+            self.assertEqual(bridge.expected_version, "2.1.0")
+
+            marker.parent.mkdir(parents=True)
+            marker.write_bytes(b"enabled")
+            with self.assertRaisesRegex(tnc.TNCError, "Invalid experimental"):
+                tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+            marker.write_bytes(b"enabled\n")
+            with self.assertRaisesRegex(tnc.TNCError, "missing or not executable"):
+                tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"test binary")
+            with mock.patch.object(tnc.os, "access", return_value=True):
+                bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+            self.assertEqual(bridge.executable, str(binary))
+            self.assertEqual(bridge.expected_version, "2.1.0-pocketlink.1")
+
+            marker.write_bytes(b"enabled\nextra")
+            with self.assertRaisesRegex(tnc.TNCError, "Invalid experimental"):
+                tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+
+    def test_experimental_version_and_api_gates(self):
+        proc = mock.Mock(returncode=0, stdout="tncd 2.1.0\n")
+        with mock.patch.object(tnc.subprocess, "run", return_value=proc):
+            with self.assertRaisesRegex(tnc.TNCError, "2.1.0-pocketlink.1"):
+                tnc._check_tncd("/local/experimental", "2.1.0-pocketlink.1")
+            proc.stdout = "tncd 2.1.0-pocketlink.1\n"
+            tnc._check_tncd("/local/experimental", "2.1.0-pocketlink.1")
+            with self.assertRaisesRegex(tnc.TNCError, "2.1.0"):
+                tnc._check_tncd("/local/experimental")
+
+        process = FakeProc()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake", api_port=23021)
+        bridge.expected_version = "2.1.0-pocketlink.1"
+        response = mock.Mock(status=200)
+        conn = mock.Mock()
+        conn.getresponse.return_value = response
+        with mock.patch.object(tnc, "_owns_listener", return_value=True), \
+             mock.patch.object(tnc.http.client, "HTTPConnection", return_value=conn):
+            status = {"version": "2.1.0", "ports": [{"port": 0, "type": "bluetooth", "online": True}]}
+            response.read.return_value = json.dumps(status).encode()
+            self.assertFalse(bridge._online(process))
+            status["version"] = "2.1.0-pocketlink.1"
+            response.read.return_value = json.dumps(status).encode()
+            self.assertTrue(bridge._online(process))
+            status["ports"][0]["online"] = False
+            response.read.return_value = json.dumps(status).encode()
+            self.assertFalse(bridge._online(process))
+        process.terminate()
+        process.stdout.close()
+
+    def test_experimental_wrong_version_never_starts_bridge_or_falls_back(self):
+        home = Path(self.temp.name)
+        marker = home / ".config" / "cardputer-pat" / "experimental-tncd"
+        marker.parent.mkdir(parents=True)
+        marker.write_bytes(b"enabled\n")
+        binary = home / ".local" / "bin" / "pocketlink-tncd-experimental"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"test binary")
+        proc = mock.Mock(returncode=0, stdout="tncd 2.1.0\n")
+        with mock.patch.object(tnc.Path, "home", return_value=home), \
+             mock.patch.object(tnc.os, "access", return_value=True), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc.subprocess, "run", return_value=proc) as run, \
+             mock.patch.object(tnc.subprocess, "Popen") as spawn, \
+             mock.patch.object(tnc, "_ensure_port_free") as port_check:
+            bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL")
+            with self.assertRaisesRegex(tnc.TNCError, "2.1.0-pocketlink.1"):
+                bridge.start()
+            self.assertEqual(run.call_args.args[0], [str(binary), "version"])
+            spawn.assert_not_called()
+            port_check.assert_not_called()
 
     def test_log_is_bounded(self):
         read_fd, write_fd = os.pipe()

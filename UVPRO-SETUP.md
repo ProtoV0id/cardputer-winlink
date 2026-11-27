@@ -80,4 +80,38 @@ For a failed attempt, check that the radio is paired and not connected elsewhere
 
 PocketLink keeps private per-session bridge diagnostics under `~/.local/state/cardputer-pat/uvpro-tncd-*.log` by default, and Pat writes `~/.local/state/cardputer-pat/pat.log` (Pat's log is replaced when its process starts). These may contain callsigns, addresses, or message-related details. Review and redact them before sharing, and never share a password.
 
+## Experimental bridge for an already-connected radio
+
+PocketLink 0.3.3 can opt into a separately built, experimental tncd that tries the Bluetooth Serial Port Profile without first disconnecting the entire radio. Some UV-PRO/BlueZ configurations reconnect an audio profile while that whole-device disconnect is in progress. This is an experiment, not a confirmed fix. Upstream added the disconnect to clear stale serial links; bypassing it could leave a link that appears online but does not transmit. Earlier failures without a pre-disconnect are not explained by this change. It retains upstream's later audio-profile cleanup. The app still requires the bridge's Bluetooth port to report online before starting Pat, but that does not prove RF transmission.
+
+The experimental bridge, complete corresponding GPL source, and reproducible build instructions are in [experimental/tncd-uvpro](experimental/tncd-uvpro/README.md). The official `~/.local/bin/tncd` is not changed. To opt in after upgrading PocketLink, on a Linux **aarch64** Cardputer, with the app closed, run the following from this repository:
+
+```sh
+cd ~/cardputer-winlink
+experimental_binary=experimental/tncd-uvpro/artifacts/tncd-2.1.0-pocketlink.1-linux-arm64
+experimental_dest="$HOME/.local/bin/pocketlink-tncd-experimental"
+experimental_marker="$HOME/.config/cardputer-pat/experimental-tncd"
+if [ "$(uname -m)" != aarch64 ]; then
+    echo "This experimental binary requires aarch64."
+elif [ -e "$experimental_dest" ] || [ -e "$experimental_marker" ]; then
+    echo "Existing experimental file found; inspect it before continuing."
+elif ! printf '%s  %s\n' 'f8dff1b9ff2507427f5e96e7fcc1207b8a9e1ef16cd571860e0899723a648d81' "$experimental_binary" | sha256sum -c -; then
+    echo "Checksum failed; experimental bridge not enabled."
+else
+    mkdir -p "$HOME/.local/bin" "$HOME/.config/cardputer-pat" &&
+    install -m 0755 "$experimental_binary" "$experimental_dest" &&
+    [ "$("$experimental_dest" version)" = 'tncd 2.1.0-pocketlink.1' ] &&
+    printf 'enabled\n' > "$experimental_marker" &&
+    echo "Experimental bridge enabled; start a packet session only when ready to transmit."
+fi
+```
+
+If version verification fails, the marker is not created. To return to the official bridge, close PocketLink and remove only the opt-in marker:
+
+```sh
+rm -f "$HOME/.config/cardputer-pat/experimental-tncd"
+```
+
+Then a new PocketLink session selects the official bridge again. Neither path automatically retries a failed packet session.
+
 PocketLink stores the Bluetooth address and gateway separately in `~/.config/pocketlink/radio.json`. Pat's mailbox and configuration remain in their existing locations. The app starts a private local bridge and private Pat runtime configuration and does not enable automatic QSY or modify radio memories.

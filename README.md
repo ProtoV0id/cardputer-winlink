@@ -20,7 +20,7 @@ sudo apt install git python3
 git clone https://github.com/ProtoV0id/cardputer-winlink.git ~/cardputer-winlink
 cd ~/cardputer-winlink
 python3 build_package.py
-sudo apt install ./dist/cardputer-winlink_0.3.2_all.deb
+sudo apt install ./dist/cardputer-winlink_0.3.3_all.deb
 ```
 
 The final command installs the app, Pat, Pillow, and evdev using the device's configured Debian repositories. The package requires Pat 0.16.0 or newer; if apt cannot satisfy a dependency, stop and check your Cardputer's OS and package sources. If `~/cardputer-winlink` already exists, Git refuses to overwrite it; inspect the existing folder before choosing a different destination.
@@ -37,6 +37,8 @@ Then use the Cardputer's own screen to find **PocketLink** in the application wh
 
 For a UV-PRO Bluetooth packet session, complete the separate [UV-PRO setup](UVPRO-SETUP.md), including installing `tncd`, pairing, and manually checking the radio's KISS frequencies. Packet settings include an optional digipeater; leave it empty for a direct gateway connection. Neither the bridge nor an RF session starts automatically; Telnet does not require the bridge.
 
+An opt-in [experimental UV-PRO bridge](UVPRO-SETUP.md#experimental-bridge-for-an-already-connected-radio) is available for testing a Bluetooth connection problem. It preserves the official bridge and does not establish that RF transmission works.
+
 ## Update an existing installation
 
 Close the app on the Cardputer, connect over SSH, and run:
@@ -46,7 +48,7 @@ cd ~/cardputer-winlink
 git pull --ff-only
 build_dir=$(mktemp -d)
 python3 build_package.py --output-dir "$build_dir"
-sudo apt install "$build_dir/cardputer-winlink_0.3.2_all.deb"
+sudo apt install "$build_dir/cardputer-winlink_0.3.3_all.deb"
 ```
 
 The fresh build directory avoids replacing an earlier package. If `git pull` reports local changes, stop and inspect them before proceeding. The Debian package and existing installation paths remain named `cardputer-winlink`, so this upgrades the previous version instead of installing a second app. The wheel entry is renamed PocketLink. The upgrade leaves Pat's configuration and mail in their existing locations.

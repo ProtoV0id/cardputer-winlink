@@ -32,6 +32,8 @@ class TNCError(RuntimeError):
 
 _MAC = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _CALL = re.compile(r"([A-Z0-9]{1,6})(?:-([0-9]{1,2}))?\Z")
+_TNCD_VERSION = "2.1.0"
+_EXPERIMENTAL_TNCD_VERSION = "2.1.0-pocketlink.1"
 
 
 def normalize_mac(value):
@@ -73,15 +75,35 @@ def _ephemeral_port(exclude):
     raise TNCError("Cannot allocate a separate packet status port.")
 
 
-def _find_tncd():
+def _experimental_tncd_enabled():
+    """Require an exact, explicit local opt-in for the modified bridge."""
+    marker = Path.home() / ".config" / "cardputer-pat" / "experimental-tncd"
+    try:
+        with marker.open("rb") as stream:
+            content = stream.read(9)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise TNCError("Cannot read experimental tncd opt-in: " + str(exc)) from exc
+    if content != b"enabled\n":
+        raise TNCError("Invalid experimental tncd opt-in; use exactly enabled followed by a newline, or remove the marker.")
+    return True
+
+
+def _find_tncd(experimental=False):
     # APPLaunch does not necessarily add the user's local bin to PATH.
+    if experimental:
+        candidate = Path.home() / ".local" / "bin" / "pocketlink-tncd-experimental"
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise TNCError("Experimental tncd is enabled, but its executable is missing or not executable.")
+        return str(candidate)
     candidate = Path.home() / ".local" / "bin" / "tncd"
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
     return shutil.which("tncd")
 
 
-def _check_tncd(executable):
+def _check_tncd(executable, version=_TNCD_VERSION):
     """Check the documented safe version subcommand before connecting radio."""
     if not executable:
         raise TNCError("tncd is not installed. Install tncd 2.1.0 with Bluetooth support first.")
@@ -90,9 +112,9 @@ def _check_tncd(executable):
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 text=True, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise TNCError("Could not run tncd. Check that tncd 2.1.0 is executable.") from exc
-    if result.returncode != 0 or result.stdout.strip() != "tncd 2.1.0":
-        raise TNCError("PocketLink requires tncd 2.1.0 for this radio connection.")
+        raise TNCError("Could not run tncd. Check that the selected tncd " + version + " is executable.") from exc
+    if result.returncode != 0 or result.stdout.strip() != "tncd " + version:
+        raise TNCError("PocketLink requires tncd " + version + " for this radio connection.")
 
 
 def _owns_listener(pid, port):
@@ -142,7 +164,9 @@ class UVProTNC:
             raise TNCError("Invalid local packet status port.")
         self._requested_api_port = api_port
         self.api_port = api_port
-        self.executable = executable or _find_tncd()
+        experimental = executable is None and _experimental_tncd_enabled()
+        self.expected_version = _EXPERIMENTAL_TNCD_VERSION if experimental else _TNCD_VERSION
+        self.executable = executable if executable is not None else _find_tncd(experimental)
         self.startup_timeout = startup_timeout
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._proc = None
@@ -176,7 +200,7 @@ class UVProTNC:
                 return False
             data = json.loads(raw)
             ports = data.get("ports")
-            if data.get("version") != "2.1.0" or not isinstance(ports, list):
+            if data.get("version") != self.expected_version or not isinstance(ports, list):
                 return False
             if proc.poll() is not None or not _owns_listener(proc.pid, self.api_port):
                 return False
@@ -231,7 +255,7 @@ class UVProTNC:
             self.stop()
             if sys.platform != "linux":
                 raise TNCError("UV-PRO Bluetooth support requires Linux and BlueZ.")
-            _check_tncd(self.executable)
+            _check_tncd(self.executable, self.expected_version)
             if self.cancel_event.is_set():
                 raise TNCError("Bluetooth connection canceled.")
             _ensure_port_free(self.port)
