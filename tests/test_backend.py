@@ -52,6 +52,9 @@ class PatBackendTests(unittest.TestCase):
         with self.assertRaises(PatError):
             self.backend.read_message("in", "../invalid")
 
+    def test_null_sender_does_not_become_a_callsign(self):
+        self.assertEqual(self.backend._message({"From": {"Addr": None}})["from"], "")
+
     def test_queue_and_session_use_pats_correct_endpoints(self):
         self.backend.queue_message("someone@example.org", "Test", "Hello")
         path, payload = self.backend.calls[-1]

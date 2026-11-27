@@ -222,7 +222,7 @@ class PatBackend:
     @staticmethod
     def _address(value):
         if isinstance(value, dict):
-            return str(value.get("Addr", value.get("addr", "")))
+            return str(value.get("Addr", value.get("addr", "")) or "")
         return str(value or "")
 
     def _message(self, value):

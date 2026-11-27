@@ -14,8 +14,11 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 from appearance import AppearanceSettings
 from backend import PatBackend
+from contacts import ContactBook, normalize_contact_address
 from dashboard import draw_dashboard, draw_radio_home
 from device import W, H, default_keyboard, run_device
+from diagnostics import failure_summary, format_report, latest_bridge_report
+from gateway_profiles import GatewayProfiles
 
 # Signal Blue: dark navy, light text and cyan accents, matching the selected
 # preview. Colors are decorative and do not imply a connection is active.
@@ -143,7 +146,8 @@ class RadioSettings:
         except (OSError, ValueError) as exc:
             raise RuntimeError("Cannot read packet settings: " + str(exc)) from exc
 
-    def update(self, field, value):
+    @staticmethod
+    def _validated(field, value):
         value = value.strip().upper()
         if field == "mac":
             if not re.fullmatch(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}", value):
@@ -154,11 +158,22 @@ class RadioSettings:
                                  else "Enter one digipeater callsign with optional SSID 0-15, or leave blank for direct.")
         else:
             raise ValueError("Unknown packet setting.")
+        return value
+
+    def update(self, field, value):
+        self._update_fields({field: self._validated(field, value)})
+
+    def update_route(self, gateway, via):
+        """Replace the complete route in one write, retaining the radio MAC."""
+        self._update_fields({"gateway": self._validated("gateway", gateway),
+                             "via": self._validated("via", via)})
+
+    def _update_fields(self, values):
         try:
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             before = self.path.read_bytes() if self.path.exists() else None
             data = self.load()
-            data[field] = value
+            data.update(values)
             fd, temp = tempfile.mkstemp(prefix=".radio-", dir=self.path.parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -178,9 +193,12 @@ class RadioSettings:
 
 
 class UI:
-    def __init__(self, backend=None, radio_config_path=None, tnc_factory=None, appearance_config_path=None):
+    def __init__(self, backend=None, radio_config_path=None, tnc_factory=None, appearance_config_path=None,
+                 contacts_path=None, gateway_profiles_path=None):
         self.backend = backend or PatBackend()
         self.radio = RadioSettings(radio_config_path)
+        self.contacts = ContactBook(contacts_path)
+        self.gateway_profiles = GatewayProfiles(gateway_profiles_path)
         self.appearance = AppearanceSettings(appearance_config_path)
         try:
             self.layout = self.appearance.load()
@@ -192,6 +210,8 @@ class UI:
         self._packet_control = None
         self._session_progress = None
         self._session_started = None
+        self._session_started_wall = None
+        self._last_session = None
         # Radio-style home navigation remembers the selected action in each
         # column while the operator switches sides or visits a submenu.
         self._radio_focus = 0
@@ -199,6 +219,8 @@ class UI:
         self._radio_right_top = 0
         self.results = queue.Queue()
         self.draft = {"to": "", "subject": "", "body": ""}
+        self._contact_draft = None
+        self._profile_draft = None
         self.settings = {}
         self.home()
 
@@ -251,6 +273,7 @@ class UI:
         self.back = back or self.home
         self._session_progress = session
         self._session_started = time.monotonic() if session else None
+        self._session_started_wall = time.time() if session else None
         def run():
             try:
                 self.results.put((True, work(), done, self.back))
@@ -263,16 +286,58 @@ class UI:
             ok, value, done, back = self.results.get_nowait()
         except queue.Empty:
             return
+        session = self._session_progress
+        control = self._packet_control
+        if session:
+            self._last_session = {
+                "kind": session,
+                "outcome": "canceled" if value is _PACKET_CANCELLED else ("completed" if ok else "failed"),
+                "error": None if ok else value,
+                "result": value if ok and value is not _PACKET_CANCELLED else None,
+                "started_at": self._session_started_wall,
+                "bridge_log": getattr(control.get("bridge"), "log_path", None) if control else None,
+                # The recognized Pat log events are packet-specific. A reused
+                # Pat process may contain old packet records during Telnet.
+                "include_pat": session == "packet" and bool(control and control.get("phase") == "session"),
+            }
         self._packet_control = None
         self._session_progress = None
         self._session_started = None
+        self._session_started_wall = None
         if ok:
             try:
                 done(value)
             except Exception as exc:
                 self.view("DISPLAY ERROR", str(exc), back)
         else:
-            self.view("PAT ERROR", value, back)
+            if session:
+                self.session_result("SESSION ERROR", failure_summary(value), back)
+            else:
+                self.view("PAT ERROR", value, back)
+
+    def session_result(self, title, text, back=None):
+        """Show the result and make its connection report available on-device."""
+        back = back or self.home
+        self.view(title, str(text) + "\n\nEnter: connection report.", back)
+        self.accept = lambda: self.show_connection_diagnostics(lambda: self.session_result(title, text, back))
+        self.accept_hint = "F/X SCROLL  ENTER REPORT  ESC BACK"
+
+    def show_connection_diagnostics(self, back=None):
+        back = back or self.settings_menu
+        if self._last_session is None:
+            report = "No session recorded since PocketLink opened. Start a Telnet or packet session to see its report."
+        else:
+            report = format_report(**self._last_session)
+        self.view("CONNECTION REPORT", report, back)
+
+    def connection_reports(self, back=None):
+        back = back or self.settings_menu
+        reports = lambda: self.connection_reports(back)
+        self.menu("CONNECTION REPORTS", [
+            ("Last session this run", lambda: self.show_connection_diagnostics(reports)),
+            ("Previous radio bridge log", lambda: self.view("RADIO BRIDGE LOG", latest_bridge_report(), reports)),
+            ("Back", back),
+        ], back)
 
     def folder(self, folder):
         names = {"in": "INBOX", "out": "OUTBOX", "sent": "SENT"}
@@ -290,20 +355,139 @@ class UI:
         self.task("LOADING " + names[folder], lambda: self.backend.list_messages(folder), loaded)
 
     def open_message(self, folder, message):
-        def loaded(m):
-            attachments = m.get("attachments") or []
-            text = ("From: " + str(m.get("from", "")) + "\nTo: " + str(m.get("to", "")) +
-                    "\nSubject: " + str(m.get("subject", "")) + "\nDate: " + str(m.get("date", "")) +
-                    "\n\n" + str(m.get("body", "")))
-            if attachments:
-                text += "\n\nAttachments: " + ", ".join(str(a) for a in attachments)
-            self.view("MESSAGE", text, lambda: self.folder(folder))
-        self.task("OPENING MESSAGE", lambda: self.backend.read_message(folder, message["id"]), loaded,
+        self.task("OPENING MESSAGE", lambda: self.backend.read_message(folder, message["id"]),
+                  lambda m: self.display_message(folder, m),
                   lambda: self.folder(folder))
+
+    def display_message(self, folder, message):
+        attachments = message.get("attachments") or []
+        text = ("From: " + str(message.get("from", "")) + "\nTo: " + str(message.get("to", "")) +
+                "\nSubject: " + str(message.get("subject", "")) + "\nDate: " + str(message.get("date", "")) +
+                "\n\n" + str(message.get("body", "")))
+        if attachments:
+            text += "\n\nAttachments: " + ", ".join(str(a) for a in attachments)
+        self.view("MESSAGE", text, lambda: self.folder(folder))
+        if folder in ("in", "inbox"):
+            self.accept = lambda: self.message_actions(folder, message)
+            self.accept_hint = "F/X SCROLL  ENTER ACTIONS  ESC BACK"
+
+    def message_actions(self, folder, message):
+        back = lambda: self.display_message(folder, message)
+        self.menu("MESSAGE ACTIONS", [
+            ("Reply", lambda: self.reply_to_message(folder, message)),
+            ("Save sender to contacts", lambda: self.edit_contact(None, False, back,
+                                                                  str(message.get("from", "")))),
+            ("Back to message", back),
+            ("Back to inbox", lambda: self.folder(folder)),
+        ], back)
+
+    def reply_to_message(self, folder, message):
+        back = lambda: self.message_actions(folder, message)
+        try:
+            sender = normalize_contact_address(str(message.get("from") or ""))
+        except ValueError:
+            self.view("REPLY UNAVAILABLE", "This message does not have one usable sender address. "
+                      "You can compose a new message and enter the recipient manually.", back)
+            return
+        subject = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(message.get("subject") or ""))
+        subject = " ".join(subject.split())
+        subject = subject if re.match(r"(?i)^re\s*:", subject) else "Re: " + subject
+        def start_reply():
+            self.draft = {"to": sender, "subject": subject, "body": ""}
+            self.compose()
+        if any(self.draft.values()):
+            self.menu("REPLACE DRAFT?", [("Keep current draft", back), ("Start reply", start_reply)], back)
+        else:
+            start_reply()
+
+    def address_book(self, choose=False, back=None):
+        back = back or self.settings_menu
+        book = lambda: self.address_book(choose, back)
+        try:
+            contacts = self.contacts.list_contacts()
+        except (RuntimeError, ValueError) as exc:
+            self.view("ADDRESS BOOK ERROR", str(exc), back)
+            return
+        items = [("Add contact", lambda: self.edit_contact(None, choose, book))]
+        items.extend((c["name"] + "  " + c["address"],
+                      lambda c=c: self.contact_actions(c, choose, book)) for c in contacts)
+        items.append(("Back", back))
+        self.menu("ADDRESS BOOK", items, back)
+
+    def contact_actions(self, contact, choose, back):
+        actions = []
+        if choose:
+            def use_contact():
+                try:
+                    current = next((c for c in self.contacts.list_contacts() if c["id"] == contact["id"]), None)
+                    if current is None:
+                        raise ValueError("Contact no longer exists; reload the address book.")
+                    if current != contact:
+                        raise ValueError("Contact changed; reload the address book before choosing it.")
+                    address = normalize_contact_address(current["address"])
+                except (RuntimeError, ValueError) as exc:
+                    self.view("CONTACT ERROR", str(exc), back)
+                    return
+                self.draft["to"] = address
+                self.compose()
+            actions.append(("Use as recipient", use_contact))
+        actions.extend([
+            ("View details", lambda: self.view("CONTACT", "Name: " + contact["name"] +
+                                               "\nAddress: " + contact["address"],
+                                               lambda: self.contact_actions(contact, choose, back))),
+            ("Edit contact", lambda: self.edit_contact(contact, choose, back)),
+            ("Delete contact", lambda: self.delete_contact_confirm(contact, choose, back)),
+            ("Back", back),
+        ])
+        self.menu(contact["name"], actions, back)
+
+    def edit_contact(self, contact, choose, back, address=""):
+        self._contact_original = dict(contact) if contact else None
+        self._contact_draft = {"id": contact.get("id") if contact else None,
+                               "name": contact.get("name", "") if contact else "",
+                               "address": contact.get("address", "") if contact else address}
+        self._contact_editor_back = back
+        self.contact_editor()
+
+    def contact_editor(self):
+        draft = self._contact_draft
+        back = self._contact_editor_back
+        def edit_field(field, title):
+            def save(value):
+                draft[field] = value
+                self.contact_editor()
+            self.edit(title, draft[field], save, self.contact_editor)
+        def save_contact():
+            try:
+                self.contacts.save(draft["name"], draft["address"], draft["id"],
+                                   expected=self._contact_original)
+            except (RuntimeError, ValueError) as exc:
+                self.view("CONTACT ERROR", str(exc), self.contact_editor)
+                return
+            self._contact_draft = None
+            back()
+        self.menu("EDIT CONTACT", [
+            ("Name: " + (draft["name"] or "(enter name)"), lambda: edit_field("name", "CONTACT NAME")),
+            ("Address: " + (draft["address"] or "(enter address)"), lambda: edit_field("address", "CONTACT ADDRESS")),
+            ("Save contact", save_contact),
+            ("Cancel", back),
+        ], back)
+
+    def delete_contact_confirm(self, contact, choose, back):
+        actions = lambda: self.contact_actions(contact, choose, back)
+        def remove():
+            try:
+                self.contacts.delete(contact["id"], expected=contact)
+            except (RuntimeError, ValueError) as exc:
+                self.view("CONTACT ERROR", str(exc), back)
+                return
+            back()
+        self.menu("DELETE CONTACT?", [("Keep contact", actions), ("Delete " + contact["name"], remove)], actions)
 
     def compose(self):
         self.menu("COMPOSE", [
             ("To: " + (self.draft["to"] or "(enter address)"), lambda: self.edit_draft("to")),
+            ("Choose contact", lambda: self.address_book(True, self.compose)),
             ("Subject: " + (self.draft["subject"] or "(enter subject)"), lambda: self.edit_draft("subject")),
             ("Edit message body", lambda: self.edit_draft("body")),
             ("Review and queue", self.review_draft),
@@ -353,7 +537,7 @@ class UI:
 
     def connect(self):
         self.task("TELNET SESSION", self.backend.connect_telnet,
-                  lambda output: self.view("SESSION FINISHED", output or "Session completed."),
+                  lambda output: self.session_result("SESSION FINISHED", output or "Session completed."),
                   session="telnet")
 
     def packet_settings(self):
@@ -366,9 +550,109 @@ class UI:
             ("Bluetooth: " + (settings.get("mac") or "(set address)"), lambda: self.edit_radio_setting("mac")),
             ("Gateway: " + (settings.get("gateway") or "(set callsign)"), lambda: self.edit_radio_setting("gateway")),
             ("Via: " + (settings.get("via") or "Direct"), lambda: self.edit_radio_setting("via")),
+            ("Gateway profiles", self.gateway_profile_list),
+            ("Connection reports", lambda: self.connection_reports(self.packet_settings)),
             ("Setup help", self.packet_help),
             ("Back", self.home),
         ], self.home)
+
+    def gateway_profile_list(self):
+        try:
+            profiles = self.gateway_profiles.list()
+        except (RuntimeError, ValueError) as exc:
+            self.view("PROFILES ERROR", str(exc), self.packet_settings)
+            return
+        items = [("Add / save current route", lambda: self.edit_gateway_profile(None))]
+        items.extend((p["name"] + "  " + p["gateway"],
+                      lambda p=p: self.gateway_profile_actions(p)) for p in profiles)
+        items.append(("Back", self.packet_settings))
+        self.menu("GATEWAY PROFILES", items, self.packet_settings)
+
+    def gateway_profile_actions(self, profile):
+        back = self.gateway_profile_list
+        self.menu(profile["name"], [
+            ("Use this route", lambda: self.use_gateway_profile(profile)),
+            ("View details", lambda: self.gateway_profile_details(profile)),
+            ("Edit profile", lambda: self.edit_gateway_profile(profile)),
+            ("Delete profile", lambda: self.delete_gateway_profile_confirm(profile)),
+            ("Back", back),
+        ], back)
+
+    def gateway_profile_details(self, profile):
+        note = profile.get("frequency") or "Not set"
+        text = ("Gateway: " + profile["gateway"] + "\nVia: " + (profile.get("via") or "Direct") +
+                "\nFrequency note: " + note + "\n\nFrequency is a note only. Tune the radio manually.")
+        self.view("PROFILE DETAILS", text, lambda: self.gateway_profile_actions(profile))
+
+    def use_gateway_profile(self, profile):
+        try:
+            # Re-read the selected preset so stale menu data cannot apply a
+            # route that was edited or deleted elsewhere in the meantime.
+            current = self.gateway_profiles.get(profile["id"])
+            if current != profile:
+                raise ValueError("Gateway profile changed; reload it before selecting the route.")
+            self.radio.update_route(current["gateway"], current.get("via", ""))
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.view("PROFILE ERROR", str(exc), self.gateway_profile_list)
+            return
+        note = current.get("frequency") or "Not set"
+        self.view("ROUTE SELECTED", "Gateway: " + current["gateway"] + "\nVia: " +
+                  (current.get("via") or "Direct") + "\nFrequency note: " + note +
+                  "\n\nTune the radio manually. No session has started.", self.packet_settings)
+
+    def edit_gateway_profile(self, profile):
+        if profile is None:
+            try:
+                active = self.radio.load()
+            except RuntimeError as exc:
+                self.view("PACKET SETTINGS", str(exc), self.gateway_profile_list)
+                return
+            profile = {"id": None, "name": "", "gateway": active.get("gateway", ""),
+                       "via": active.get("via", ""), "frequency": ""}
+        self._profile_original = dict(profile) if profile.get("id") else None
+        self._profile_draft = dict(profile)
+        self.gateway_profile_editor()
+
+    def gateway_profile_editor(self):
+        draft = self._profile_draft
+        back = self.gateway_profile_list
+        def edit_field(field, title):
+            def save(value):
+                draft[field] = value
+                self.gateway_profile_editor()
+            self.edit(title, draft.get(field, ""), save, self.gateway_profile_editor)
+        def save_profile():
+            try:
+                args = (draft.get("name", ""), draft.get("gateway", ""),
+                        draft.get("via", ""), draft.get("frequency", ""))
+                if draft.get("id"):
+                    self.gateway_profiles.update(draft["id"], *args, expected=self._profile_original)
+                else:
+                    self.gateway_profiles.create(*args)
+            except (RuntimeError, ValueError) as exc:
+                self.view("PROFILE ERROR", str(exc), self.gateway_profile_editor)
+                return
+            self._profile_draft = None
+            self.gateway_profile_list()
+        self.menu("EDIT PROFILE", [
+            ("Name: " + (draft.get("name") or "(enter name)"), lambda: edit_field("name", "PROFILE NAME")),
+            ("Gateway: " + (draft.get("gateway") or "(enter callsign)"), lambda: edit_field("gateway", "RMS GATEWAY CALL")),
+            ("Via: " + (draft.get("via") or "Direct"), lambda: edit_field("via", "DIGIPEATER (OPTIONAL)")),
+            ("Frequency note: " + (draft.get("frequency") or "(optional)"), lambda: edit_field("frequency", "FREQUENCY NOTE")),
+            ("Save profile", save_profile),
+            ("Cancel", back),
+        ], back)
+
+    def delete_gateway_profile_confirm(self, profile):
+        actions = lambda: self.gateway_profile_actions(profile)
+        def remove():
+            try:
+                self.gateway_profiles.delete(profile["id"], expected=profile)
+            except (RuntimeError, ValueError) as exc:
+                self.view("PROFILE ERROR", str(exc), self.gateway_profile_list)
+                return
+            self.gateway_profile_list()
+        self.menu("DELETE PROFILE?", [("Keep profile", actions), ("Delete " + profile["name"], remove)], actions)
 
     def edit_radio_setting(self, field):
         try:
@@ -432,7 +716,10 @@ class UI:
                     from uvpro_tnc import UVProTNC
                     factory = UVProTNC
                 # A local listener alone does not prove Bluetooth or RF status.
-                with factory(settings["mac"], call, port=8000, cancel_event=control["cancel"]):
+                bridge = factory(settings["mac"], call, port=8000, cancel_event=control["cancel"])
+                with control["lock"]:
+                    control["bridge"] = bridge
+                with bridge:
                     with control["lock"]:
                         if control["cancel"].is_set():
                             return _PACKET_CANCELLED
@@ -446,9 +733,9 @@ class UI:
                 raise
         def complete(output):
             if output is _PACKET_CANCELLED:
-                self.view("PACKET CANCELED", "Bluetooth setup canceled. The packet session was not started.")
+                self.session_result("PACKET CANCELED", "Bluetooth setup canceled. The packet session was not started.")
             else:
-                self.view("SESSION FINISHED", output or "Packet session completed.")
+                self.session_result("SESSION FINISHED", output or "Packet session completed.")
         self.task("PACKET SESSION", work, complete, self.home, session="packet")
 
     def load_settings(self):
@@ -464,6 +751,8 @@ class UI:
             ("Grid: " + (self.settings.get("locator") or "(optional)"), lambda: self.edit_setting("locator")),
             ("Password: " + ("set" if self.settings.get("has_password") else "not set"), lambda: self.edit_setting("password")),
             ("Layout: " + layout_name, self.layout_menu),
+            ("Address book", self.address_book),
+            ("Connection reports", self.connection_reports),
             ("Back", self.home),
         ], self.home)
 

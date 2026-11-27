@@ -72,6 +72,7 @@ Follow any pairing prompts. `bluetoothctl devices Paired` can show paired device
 
 1. In **Settings**, set your own callsign if it isn't set already.
 2. Open **Packet radio settings** and enter the radio's Bluetooth address and your gateway's callsign/SSID. If the path uses a digipeater, enter its callsign/SSID in the separate optional **Via** field; otherwise leave **Via** empty for a direct connection. The gateway field must contain the final Winlink RMS, not the digipeater.
+   Use **Gateway profiles** to save and later select named gateway/digipeater routes. A saved frequency is only a note; choosing the profile does not tune the radio or transmit.
 3. On the radio, enable KISS TNC and manually verify its KISS RX/TX frequencies, mode, and power against the gateway. Do not use an APRS-only frequency for a Winlink connection.
 4. Queue a short test message if desired. Choose **Connect via packet**, read the reminder, and explicitly select the transmit option. Bluetooth startup may take about 3 minutes; the app shows a waiting screen and allows Escape to cancel before the packet session begins. The radio can transmit only after you start the session.
 5. Review the session result and Sent/Outbox. A local bridge or Bluetooth connection alone is not proof that RF was transmitted or that a gateway received the message. The UV-PRO may behave differently across firmware versions; an independent receiver on the gateway frequency can help verify RF.
@@ -79,6 +80,8 @@ Follow any pairing prompts. `bluetoothctl devices Paired` can show paired device
 For a failed attempt, check that the radio is paired and not connected elsewhere, KISS is enabled, `tncd` is present and version 2.1.0, the configured gateway and any digipeater callsign/SSID are correct, and the radio is on the gateway's actual packet RX/TX frequencies. Packet gateway and digipeater reachability, antenna, channel contention and permitted transmit settings must also be checked. PocketLink needs local TCP port 8000 for its temporary AGWPE bridge; if it reports the port is occupied, inspect the existing service before changing it. Do not infer success from Telnet or from a merely running bridge.
 
 PocketLink keeps private per-session bridge diagnostics under `~/.local/state/cardputer-pat/uvpro-tncd-*.log` by default, and Pat writes `~/.local/state/cardputer-pat/pat.log` (Pat's log is replaced when its process starts). These may contain callsigns, addresses, or message-related details. Review and redact them before sharing, and never share a password.
+
+For an on-device summary, choose **Connection reports** in Packet radio settings, or press Enter for a report after a session. Reports show recognized events without raw log lines. A previous bridge-log summary may come from an earlier session and cannot establish whether the radio is connected now.
 
 ## Experimental bridge for an already-connected radio
 

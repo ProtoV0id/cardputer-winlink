@@ -308,7 +308,7 @@ class UITest(unittest.TestCase):
         self.ui.packet_connect({"mac": "AA:BB:CC:DD:EE:FF", "gateway": "N0RMS"})
         self.wait_task()
         self.assertEqual(events, ["stop"])
-        self.assertIn("radio failed", self.ui.text)
+        self.assertIn("Radio connection failed", self.ui.text)
         self.ui.connect()
         self.wait_task()
         self.assertEqual(self.backend.connected, 1)
