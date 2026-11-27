@@ -9,7 +9,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = "cardputer-winlink"
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 PREFIX = "/usr/share/APPLaunch"
 OUTPUT_NAME = f"{PACKAGE}_{VERSION}_all.deb"
 SOURCES = ("winlink_gui.py", "backend.py", "device.py", "uvpro_tnc.py")

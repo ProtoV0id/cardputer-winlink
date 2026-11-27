@@ -565,7 +565,7 @@ class UI:
                 with self._packet_control["lock"]:
                     phase = self._packet_control["phase"]
                 if phase == "starting":
-                    busy_text = "Connecting to radio...\nThis may take up to 2.5 minutes.\n\nEsc cancels Bluetooth setup."
+                    busy_text = "Connecting to radio...\nThis may take about 3 minutes.\n\nEsc cancels Bluetooth setup."
                     busy_hint = "ESC CANCEL SETUP"
                 elif phase == "canceling":
                     busy_text = "Canceling Bluetooth setup...\nPlease wait for cleanup."

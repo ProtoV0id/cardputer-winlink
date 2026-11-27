@@ -2,12 +2,15 @@
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
 import uvpro_tnc as tnc
+
+_REAL_START_DISCOVERY = tnc.UVProTNC._start_discovery
 
 
 class FakeProc:
@@ -16,6 +19,7 @@ class FakeProc:
         self.code = None
         read_fd, self.write_fd = os.pipe()
         self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+        self.stdin = None
         self.terminated = False
 
     def poll(self):
@@ -40,10 +44,154 @@ class UVProTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.temp.name})
         self.env.start()
+        # Existing bridge tests exercise the bridge itself; discovery has
+        # dedicated lifecycle tests below, without requiring a Bluetooth adapter.
+        self.discovery = mock.patch.object(tnc.UVProTNC, "_start_discovery")
+        self.discovery.start()
 
     def tearDown(self):
+        self.discovery.stop()
         self.env.stop()
         self.temp.cleanup()
+
+    def test_discovery_is_running_before_bridge_and_stops_with_session(self):
+        scanner, process = FakeProc(), FakeProc()
+        os.write(scanner.write_fd, b"[CHG] Controller ...\nDiscovery started\n")
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", side_effect=lambda value: "/usr/bin/" + value), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc, "_owns_listener", return_value=True), \
+             mock.patch.object(bridge, "_online", return_value=True), \
+             mock.patch.object(tnc.subprocess, "Popen", side_effect=[scanner, process]) as spawn:
+            bridge.start()
+            self.assertEqual(spawn.call_args_list[0].args[0], ["/usr/bin/bluetoothctl", "--timeout", "600", "scan", "on"])
+            self.assertEqual(spawn.call_args_list[1].args[0][0], "fake-tncd")
+            self.assertIsNone(scanner.poll())
+            self.assertIsNone(process.poll())
+            bridge.stop()
+            self.assertTrue(scanner.terminated)
+            self.assertTrue(process.terminated)
+
+    def test_discovery_rejection_never_launches_bridge(self):
+        scanner = FakeProc()
+        os.write(scanner.write_fd, b"Failed to start discovery: org.bluez.Error.NotReady\n")
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", side_effect=lambda value: "/usr/bin/" + value), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc.subprocess, "Popen", return_value=scanner) as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "discovery could not start"):
+                bridge.start()
+            self.assertEqual(spawn.call_count, 1)
+            self.assertTrue(scanner.terminated)
+
+    def test_discovery_ack_is_a_complete_line_and_not_a_device_name(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake")
+        event = threading.Event()
+        worker = threading.Thread(target=bridge._drain_discovery, args=(stream, event))
+        worker.start()
+        try:
+            os.write(write_fd, b"[NEW] Device AA:BB:CC:DD:EE:FF Discovery started\n")
+            self.assertFalse(event.wait(0.1))
+            os.write(write_fd, b"\x1b[0mDiscovery sta")
+            self.assertFalse(event.wait(0.1))
+            os.write(write_fd, b"rted\x1b[0m\r\n")
+            self.assertTrue(event.wait(1))
+            self.assertIsNone(bridge._scan_error)
+        finally:
+            os.close(write_fd)
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+
+    def test_missing_discovery_command_fails_without_starting_bridge(self):
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", return_value=None), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "requires bluetoothctl"):
+                bridge.start()
+            spawn.assert_not_called()
+
+    def test_cancellation_during_discovery_cleans_up_without_launching_bridge(self):
+        scanner = FakeProc()
+        cancel = threading.Event()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd", cancel_event=cancel)
+        def spawn_scan(*args, **kwargs):
+            cancel.set()
+            return scanner
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", side_effect=lambda value: "/usr/bin/" + value), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc.subprocess, "Popen", side_effect=spawn_scan) as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "Bluetooth connection canceled"):
+                bridge.start()
+            self.assertEqual(spawn.call_count, 1)
+            self.assertTrue(scanner.terminated)
+
+    def test_discovery_timeout_stops_scanner_without_launching_bridge(self):
+        scanner = FakeProc()
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", return_value="/usr/bin/bluetoothctl"), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc.time, "monotonic", side_effect=[0, 16]), \
+             mock.patch.object(tnc.subprocess, "Popen", return_value=scanner) as spawn:
+            with self.assertRaisesRegex(tnc.TNCError, "discovery did not start"):
+                bridge.start()
+            self.assertEqual(spawn.call_count, 1)
+            self.assertTrue(scanner.terminated)
+
+    def test_bridge_spawn_error_cleans_up_running_discovery(self):
+        scanner = FakeProc()
+        os.write(scanner.write_fd, b"Discovery started\n")
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", return_value="/usr/bin/bluetoothctl"), \
+             mock.patch.object(tnc.sys, "platform", "linux"), \
+             mock.patch.object(tnc, "_check_tncd"), \
+             mock.patch.object(tnc, "_ensure_port_free"), \
+             mock.patch.object(tnc, "_ephemeral_port", return_value=23021), \
+             mock.patch.object(tnc.subprocess, "Popen", side_effect=[scanner, OSError("missing bridge")]):
+            with self.assertRaisesRegex(tnc.TNCError, "Could not start the packet bridge"):
+                bridge.start()
+            self.assertTrue(scanner.terminated)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux subprocess discovery check")
+    def test_real_discovery_subprocess_is_held_and_terminated(self):
+        fake = Path(self.temp.name) / "fake-bluetoothctl"
+        fake.write_text("#!/bin/sh\nprintf 'Discovery started\\n'\nexec sleep 300\n", encoding="utf-8")
+        fake.chmod(0o755)
+        bridge = tnc.UVProTNC("AA:BB:CC:DD:EE:01", "N0CALL", executable="fake-tncd")
+        with mock.patch.object(tnc.UVProTNC, "_start_discovery", _REAL_START_DISCOVERY), \
+             mock.patch.object(tnc.shutil, "which", return_value=str(fake)):
+            try:
+                bridge._start_discovery()
+                process = bridge._scan_proc
+                self.assertIsNone(process.poll())
+                self.assertFalse(process.stdin.closed)
+            finally:
+                bridge.stop()
+            self.assertIsNotNone(process.poll())
+            self.assertTrue(process.stdin.closed)
 
     def test_mac_and_callsign_validation(self):
         self.assertEqual(tnc.normalize_mac("aa:bb:cc:dd:ee:ff"), "AA:BB:CC:DD:EE:FF")

@@ -170,6 +170,10 @@ class UVProTNC:
         self.startup_timeout = startup_timeout
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._proc = None
+        self._scan_proc = None
+        self._scan_thread = None
+        self._scan_event = None
+        self._scan_error = None
         self._runtime = None
         self._listener_verified = False
         self._starting = False
@@ -239,11 +243,84 @@ class UVProTNC:
         finally:
             stream.close()
 
+    def _drain_discovery(self, stream, scan_event):
+        """Observe scan startup, then discard discovery output and device data."""
+        pending = b""
+        discard_line = False
+        try:
+            while True:
+                chunk = os.read(stream.fileno(), 4096)
+                if not chunk:
+                    break
+                if scan_event.is_set():
+                    continue
+                parts = chunk.split(b"\n")
+                for index, fragment in enumerate(parts):
+                    if not discard_line:
+                        if len(pending) + len(fragment) > 4096:
+                            pending, discard_line = b"", True
+                        else:
+                            pending += fragment
+                    if index == len(parts) - 1:
+                        break
+                    if not discard_line:
+                        line = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", pending).strip()
+                        if line.startswith(b"Failed to start discovery") or line == b"No default controller available":
+                            self._scan_error = "Bluetooth discovery could not start; check the Bluetooth adapter."
+                            scan_event.set()
+                        elif line == b"Discovery started":
+                            scan_event.set()
+                    pending, discard_line = b"", False
+                    if scan_event.is_set():
+                        break
+        except OSError:
+            pass
+        finally:
+            if not scan_event.is_set():
+                self._scan_error = "Bluetooth discovery stopped before it became ready."
+                scan_event.set()
+            stream.close()
+
+    def _start_discovery(self):
+        """Hold our own BlueZ discovery session while the packet bridge runs."""
+        bluetoothctl = shutil.which("bluetoothctl")
+        if not bluetoothctl:
+            raise TNCError("Bluetooth discovery requires bluetoothctl.")
+        self._scan_event = threading.Event()
+        self._scan_error = None
+        env = os.environ.copy()
+        env.update({"LC_ALL": "C", "LANG": "C"})
+        try:
+            self._scan_proc = subprocess.Popen(
+                [bluetoothctl, "--timeout", "600", "scan", "on"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                close_fds=True, env=env)
+        except OSError as exc:
+            raise TNCError("Could not start Bluetooth discovery: " + str(exc)) from exc
+        self._scan_thread = threading.Thread(target=self._drain_discovery,
+                                             args=(self._scan_proc.stdout, self._scan_event), daemon=True)
+        self._scan_thread.start()
+        deadline = time.monotonic() + 15
+        while not self._scan_event.wait(0.1):
+            if self.cancel_event.is_set():
+                raise TNCError("Bluetooth connection canceled.")
+            if self._scan_proc.poll() is not None:
+                raise TNCError("Bluetooth discovery stopped before it became ready.")
+            if time.monotonic() >= deadline:
+                raise TNCError("Bluetooth discovery did not start; check the Bluetooth adapter.")
+        if self.cancel_event.is_set():
+            raise TNCError("Bluetooth connection canceled.")
+        if self._scan_error:
+            raise TNCError(self._scan_error)
+        if self._scan_proc.poll() is not None:
+            raise TNCError("Bluetooth discovery stopped before it became ready.")
+
     def start(self):
         """Start tncd and wait for its local listener and Bluetooth link.
 
-        This may take up to ``startup_timeout`` seconds. Call from a worker
-        thread. A connected transport does not prove radio TX or gateway reachability.
+        Discovery startup may take an additional 15 seconds before the bridge's
+        ``startup_timeout`` begins. Call from a worker thread. A connected
+        transport does not prove radio TX or gateway reachability.
         """
         with self._lock:
             if self.cancel_event.is_set():
@@ -264,6 +341,7 @@ class UVProTNC:
                 _ensure_port_free(self.api_port)
             self._starting = True
             try:
+                self._start_discovery()
                 self._runtime = tempfile.TemporaryDirectory(prefix="pocketlink-tncd-")
                 config = Path(self._runtime.name) / "tncd.ini"
                 fd = os.open(str(config), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -288,6 +366,8 @@ class UVProTNC:
                         raise TNCError("Bluetooth connection canceled.")
                     if self._proc.poll() is not None:
                         raise TNCError("tncd exited before starting. Check its version and Bluetooth setup.")
+                    if self._scan_proc is not None and self._scan_proc.poll() is not None:
+                        raise TNCError("Bluetooth discovery stopped during setup.")
                     if _owns_listener(self._proc.pid, self.port) and self._online(self._proc):
                         if self.cancel_event.is_set():
                             raise TNCError("Bluetooth connection canceled.")
@@ -308,6 +388,9 @@ class UVProTNC:
             except OSError as exc:
                 self.stop()
                 raise TNCError("Could not start the packet bridge: " + str(exc)) from exc
+            except BaseException:
+                self.stop()
+                raise
             finally:
                 self._starting = False
 
@@ -335,8 +418,10 @@ class UVProTNC:
         """Stop only the process started by this instance and remove its config."""
         with self._lock:
             proc, self._proc = self._proc, None
+            scan_proc, self._scan_proc = self._scan_proc, None
             runtime, self._runtime = self._runtime, None
             log_thread, self._log_thread = self._log_thread, None
+            scan_thread, self._scan_thread = self._scan_thread, None
             self._listener_verified = False
             try:
                 if proc is not None and proc.poll() is None:
@@ -347,10 +432,23 @@ class UVProTNC:
                         proc.kill()
                         proc.wait(timeout=5)
             finally:
-                if log_thread is not None:
-                    log_thread.join(timeout=2)
-                if runtime is not None:
-                    runtime.cleanup()
+                try:
+                    if scan_proc is not None and scan_proc.poll() is None:
+                        scan_proc.terminate()
+                        try:
+                            scan_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            scan_proc.kill()
+                            scan_proc.wait(timeout=5)
+                finally:
+                    if scan_proc is not None and scan_proc.stdin is not None:
+                        scan_proc.stdin.close()
+                    if scan_thread is not None:
+                        scan_thread.join(timeout=2)
+                    if log_thread is not None:
+                        log_thread.join(timeout=2)
+                    if runtime is not None:
+                        runtime.cleanup()
 
     close = stop
 
