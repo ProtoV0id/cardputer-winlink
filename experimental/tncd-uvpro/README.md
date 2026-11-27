@@ -55,4 +55,3 @@ archives the patched source and vendored Go dependencies, together with this
 build recipe; include it when distributing the executable. Build an amd64 test
 executable by specifying `--arch amd64`. The executable is separate from the
 official `tncd`; restoring the original means selecting the original executable.
-
