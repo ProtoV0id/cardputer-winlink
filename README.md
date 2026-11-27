@@ -76,7 +76,7 @@ The built-in keypad translation follows M5Stack's v5 Zero driver and keymap. Ver
 
 - Pat stores its configuration in `~/.config/pat/config.json` by default and its mailbox in its usual data directory. This front end preserves other existing Pat settings and mail. Configuration and mailbox paths can depend on the user's XDG environment.
 - The Winlink password is stored in Pat's configuration, and messages are stored on the device; they are not encrypted at rest by this app. A loopback-only Pat process uses a temporary private configuration copy while the app runs and is shut down on normal exit. Avoid running multiple front ends that modify Pat configuration at the same time.
-- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. The optional UV-PRO packet path uses separately installed `tncd` 2.1.0; see [UVPRO-SETUP.md](UVPRO-SETUP.md). It has not been tested on a Cardputer or UV-PRO.
+- Plain-text messaging is supported. Attachments may be indicated on received messages, but this version does not open, create, or save attachments or Winlink forms. The optional UV-PRO packet path uses separately installed `tncd` 2.1.0; see [UVPRO-SETUP.md](UVPRO-SETUP.md). Physical Bluetooth tests have not yet established a reliable radio session; the experimental bridge has not been tested on the hardware.
 - This is an early build. A local preview or mocked test is not proof of the on-device keyboard, display, application wheel, Pat version compatibility, or an actual Winlink session.
 
 ## Local development
