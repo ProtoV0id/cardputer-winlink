@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 
 
-LAYOUTS = ("classic", "dashboard")
+LAYOUTS = ("classic", "dashboard", "radio")
 
 
 class AppearanceSettings:

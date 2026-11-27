@@ -19,6 +19,8 @@ class AppearanceSettingsTests(unittest.TestCase):
         self.assertEqual(AppearanceSettings(self.path).load(), "dashboard")
         self.settings.save("classic")
         self.assertEqual(self.settings.load(), "classic")
+        self.settings.save("radio")
+        self.assertEqual(AppearanceSettings(self.path).load(), "radio")
 
     def test_save_preserves_unknown_existing_fields(self):
         self.path.parent.mkdir(parents=True)

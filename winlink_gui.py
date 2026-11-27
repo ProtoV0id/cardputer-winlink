@@ -14,7 +14,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 from appearance import AppearanceSettings
 from backend import PatBackend
-from dashboard import draw_dashboard
+from dashboard import draw_dashboard, draw_radio_home
 from device import W, H, default_keyboard, run_device
 
 # Signal Blue: dark navy, light text and cyan accents, matching the selected
@@ -451,11 +451,12 @@ class UI:
         self.task("LOADING SETTINGS", self.backend.get_settings, loaded)
 
     def settings_menu(self):
+        layout_name = {"classic": "Classic", "dashboard": "Dashboard", "radio": "Radio"}.get(self.layout, "Classic")
         self.menu("SETTINGS", [
             ("Callsign: " + (self.settings.get("callsign") or "(not set)"), lambda: self.edit_setting("callsign")),
             ("Grid: " + (self.settings.get("locator") or "(optional)"), lambda: self.edit_setting("locator")),
             ("Password: " + ("set" if self.settings.get("has_password") else "not set"), lambda: self.edit_setting("password")),
-            ("Layout: " + ("Dashboard" if self.layout == "dashboard" else "Classic"), self.layout_menu),
+            ("Layout: " + layout_name, self.layout_menu),
             ("Back", self.home),
         ], self.home)
 
@@ -465,6 +466,8 @@ class UI:
              lambda: self.set_layout("classic")),
             ("Tile dashboard" + (" (current)" if self.layout == "dashboard" else ""),
              lambda: self.set_layout("dashboard")),
+            ("Radio style" + (" (current)" if self.layout == "radio" else ""),
+             lambda: self.set_layout("radio")),
             ("Back", self.settings_menu),
         ], self.settings_menu)
 
@@ -560,7 +563,8 @@ class UI:
         d.text((11, 5), fit(self.title, 235, TITLE), font=TITLE, fill=TEXT)
         if self.mode == "menu":
             dashboard_home = self.title == "POCKETLINK" and self.layout == "dashboard"
-            if self.title == "POCKETLINK" and not dashboard_home:
+            radio_home = self.title == "POCKETLINK" and self.layout == "radio"
+            if self.title == "POCKETLINK" and not dashboard_home and not radio_home:
                 d.rounded_rectangle((259, 6, 311, 21), radius=3, fill=BADGE, outline=EDGE)
                 d.text((263, 8), "WINLINK", font=SMALL, fill=ACCENT)
             else:
@@ -571,6 +575,10 @@ class UI:
                 draw_dashboard(d, self.items, self.sel, BODY, SMALL, fit,
                                {"selected": CARD, "panel": PANEL, "accent": ACCENT,
                                 "edge": EDGE, "text": TEXT, "muted": MUTED})
+            elif radio_home:
+                draw_radio_home(d, self.items, self.sel, BODY, SMALL, fit,
+                                {"selected": CARD, "panel": PANEL, "accent": ACCENT,
+                                 "edge": EDGE, "text": TEXT, "muted": MUTED})
             else:
                 self.top = min(self.top, self.sel)
                 if self.sel >= self.top + 4:
