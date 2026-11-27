@@ -2,7 +2,7 @@
 
 This experimental path uses the UV-PRO's built-in Bluetooth KISS TNC. Pat needs a connected-mode AX.25 engine as well as the TNC: PocketLink uses the separately installed [tncd](https://github.com/ben-kuhn/tncd) 2.1.0 bridge to provide that engine over local AGWPE. PocketLink starts it only for an explicitly confirmed packet session and stops its own bridge afterward. It does not program the radio or automatically select a frequency.
 
-**Status:** the integration has not been exercised on a physical Cardputer Zero, UV-PRO, or packet Winlink gateway. A running local bridge alone does not prove Bluetooth connection, RF transmission, or delivery.
+**Status:** physical Cardputer Zero and UV-PRO attempts have not yet established a reliable Bluetooth session. The experimental bridge below has not been tested on that hardware. A running local bridge alone does not prove Bluetooth connection, RF transmission, or delivery.
 
 ## 1. Prerequisites
 
@@ -88,22 +88,7 @@ The experimental bridge, complete corresponding GPL source, and reproducible bui
 
 ```sh
 cd ~/cardputer-winlink
-experimental_binary=experimental/tncd-uvpro/artifacts/tncd-2.1.0-pocketlink.1-linux-arm64
-experimental_dest="$HOME/.local/bin/pocketlink-tncd-experimental"
-experimental_marker="$HOME/.config/cardputer-pat/experimental-tncd"
-if [ "$(uname -m)" != aarch64 ]; then
-    echo "This experimental binary requires aarch64."
-elif [ -e "$experimental_dest" ] || [ -e "$experimental_marker" ]; then
-    echo "Existing experimental file found; inspect it before continuing."
-elif ! printf '%s  %s\n' 'f8dff1b9ff2507427f5e96e7fcc1207b8a9e1ef16cd571860e0899723a648d81' "$experimental_binary" | sha256sum -c -; then
-    echo "Checksum failed; experimental bridge not enabled."
-else
-    mkdir -p "$HOME/.local/bin" "$HOME/.config/cardputer-pat" &&
-    install -m 0755 "$experimental_binary" "$experimental_dest" &&
-    [ "$("$experimental_dest" version)" = 'tncd 2.1.0-pocketlink.1' ] &&
-    printf 'enabled\n' > "$experimental_marker" &&
-    echo "Experimental bridge enabled; start a packet session only when ready to transmit."
-fi
+sh experimental/tncd-uvpro/enable.sh
 ```
 
 If version verification fails, the marker is not created. To return to the official bridge, close PocketLink and remove only the opt-in marker:
