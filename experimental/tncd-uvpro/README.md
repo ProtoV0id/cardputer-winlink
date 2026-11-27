@@ -37,7 +37,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOTOOLCHAIN=local go build \
 ```
 
 Byte-for-byte reproducibility depends on the Go toolchain version; the ARM64
-binary was independently rebuilt with the same Go 1.27.3 and matched.
+binary was independently rebuilt with the same Go 1.27.3 using `build.py` and
+matched. The offline vendor-mode build succeeds but differs in its build
+metadata, so do not expect its binary checksum to match that artifact.
 
 With Python 3, Go 1.25.13 or newer, and network access for Go dependencies:
 
@@ -53,3 +55,4 @@ archives the patched source and vendored Go dependencies, together with this
 build recipe; include it when distributing the executable. Build an amd64 test
 executable by specifying `--arch amd64`. The executable is separate from the
 official `tncd`; restoring the original means selecting the original executable.
+
